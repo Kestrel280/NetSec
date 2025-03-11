@@ -10,7 +10,7 @@ def crash_handler(*args):
     print("(SERVER) Server closing, closing listener socket")
     try:
         listener_socket.close()
-        for client in connected_clients.values():
+        for client in connections.values():
             client.close()
     except:
         print("(SERVER) ... Failed to close sockets! netstat -ntp might show the socket in the CLOSE-WAIT state")
@@ -23,7 +23,7 @@ def handle_client(client_socket):
     client_name = client_socket.recv(1024).decode('utf-8')
     client_socket.send("OK".encode('utf-8'))
 
-    client = Client(client_socket, client_name)
+    client = Connection(client_socket, client_name)
     if not client: return # If client constructor returned None, the client couldn't be created; end this thread
 
     print(f"(SERVER) Client thread spawned for new client {client.name}")
@@ -43,13 +43,13 @@ def handle_client(client_socket):
             case 'LIST_CLIENTS':
                 #response = 'LIST_CLIENTS PLACEHOLDER'
                 #returning the names to the client
-                response = ",".join(connected_clients.keys())
+                response = ",".join(connections.keys())
             case 'GET_CLIENT_ADDR': 
                 # There should be an argument provided
                 try: 
                     arg = msg.split(' ')[1]
-                    if arg in connected_clients:
-                        response = str(connected_clients[arg].socket.getpeername())
+                    if arg in connections:
+                        response = str(connections[arg].socket.getpeername())
                     else:
                         response = 'ERROR'
                 except: response = 'ERROR'

@@ -1,24 +1,24 @@
 SERVER_PORT = 10179
 
-# Dictionary of all connected clients, as key-value pairs of client_name:Client_obj
-connected_clients = {}
+# Dictionary of all connected clients, as key-value pairs of connection_name:Connection_obj
+connections = {}
 
-class Client:
+class Connection:
     def __init__(self, socket, name):
         # Sanitize name -- no beginning/ending whitespace, and no commas
         name = name.strip().replace(',', '')
 
-        # Check if there's any clients which already have this name
-        # If so, reject this new client
-        if name in connected_clients:
-            print(f" --- Rejecting connection from client {name} -- there's already another client with that name connected! ---")
+        # Check if there's any connection which already have this name
+        # If so, reject this new connection
+        if name in connections:
+            print(f" --- Rejecting connection from {name} -- there's already another connection with that name connected! ---")
             socket.close()
             return None
         else:
             # TODO generate/exchance secret key?
             self.socket = socket
             self.name = name
-            connected_clients[name] = self
+            connections[name] = self
 
     def send(self, msg : str):
         # TODO add encryption
@@ -43,4 +43,4 @@ class Client:
     def close(self):
         try: self.socket.close()
         except: pass
-        del connected_clients[self.name]
+        del connections[self.name]

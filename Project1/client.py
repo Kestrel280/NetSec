@@ -40,6 +40,9 @@ if __name__ == '__main__':
     server_socket.send(client_name.encode('utf-8'))
     server_socket.recv(1024)
 
+    # Create a Connection helper object to talk to server
+    server = Connection(server_socket, '__SERVER__')
+
     # --- FLOW 2 ---
     # (1) Every 10 seconds (at minimum), send a "LIST_CLIENTS" message to the server
     #   The server will respond with a list of client names
@@ -52,21 +55,21 @@ if __name__ == '__main__':
     while True:
         t = time.time()
         # (1) - Complete
-        server_socket.send("LIST_CLIENTS".encode('utf-8'))
-        msg = server_socket.recv(1024).decode('utf-8')
+        server.send("LIST_CLIENTS")
+        msg = server.recv()
 
         # (2) - In progress
         for client_name in msg.split(','):
-            if client_name not in connected_clients:
-                server_socket.send(f"GET_CLIENT_ADDR {client_name}".encode('utf-8'))
-                caddr = server_socket.recv(1024).decode('utf-8')
+            if client_name not in connections:
+                server.send(f"GET_CLIENT_ADDR {client_name}")
+                caddr = server.recv()
                 # TODO: Connect to caddr, register client
                 if caddr != "ERROR":
                     try:
                         ip,port = eval(caddr)
                         client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                         client_socket.connect((ip,port))
-                        connected_clients[client_name] = Client(client_socket, client_name)
+                        connections[client_name] = Connection(client_socket, client_name)
                         print(f"Connected to {client_name} at {ip}:{port}")
 
                         # the code is now throwing exception because when the client tries to connect to the other client, there is not listening part
@@ -75,7 +78,7 @@ if __name__ == '__main__':
                         print(f"Failed to connect to {client_name}: {e}")
 
         # (3)
-        for (client_name, client) in connected_clients.items():
+        for (client_name, client) in connections.items():
             #TODO: delete any clients which no longer exist
             pass
 
@@ -84,4 +87,4 @@ if __name__ == '__main__':
         time.sleep(delay)
 
     print("-- Client escaped main loop!!! --")
-    server_socket.close()
+    server.close()
