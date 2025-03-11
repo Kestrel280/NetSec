@@ -13,13 +13,13 @@ def crash_handler(*args):
     print("(SERVER) Server received shutdown signal, shutting down...")
     running = False
 
-def handle_client(client_socket):
+def handle_client(socket, addr):
     # On connection established, first message sent will be the client's name
     # Respond with an OK just to proceed/synchronize
-    client_name = client_socket.recv(1024).decode('utf-8')
-    client_socket.send("OK".encode('utf-8'))
+    client_name, client_listen_port = socket.recv(1024).decode('utf-8').split(',')
+    socket.send("OK".encode('utf-8'))
 
-    client = Connection(client_socket, client_name)
+    client = Connection(socket, client_name, addr[0], client_listen_port)
     if not client: return # If client constructor returned None, the client couldn't be created; end this thread
 
     print(f"(SERVER) Client thread spawned for new client {client.name}")
@@ -45,10 +45,13 @@ def handle_client(client_socket):
                 try: 
                     arg = msg.split(' ')[1]
                     if arg in connections:
-                        response = str(connections[arg].socket.getpeername())
+                        response = f"{connections[arg].ip}, {connections[arg].port}"
                     else:
+                        print("(SERVER) Client {client.name} requested details on {arg}, but we don't have that info")
                         response = 'ERROR'
-                except: response = 'ERROR'
+                except Exception as e: 
+                    print(f"(SERVER) Error getting details for {arg}, requested by {client.name}")
+                    response = 'ERROR'
         client.send(response)
         
         print(f"(SERVER) Received msg '{msg}' from Client {client.name}; responded '{response}'")
@@ -86,7 +89,7 @@ if __name__ == '__main__':
         try:
             client_socket, client_address = listener_socket.accept()
             client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            thread = threading.Thread(target=handle_client, args=(client_socket,))
+            thread = threading.Thread(target=handle_client, args=(client_socket, client_address))
             thread.start()
             client_threads.append(thread)
         except TimeoutError:

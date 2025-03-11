@@ -9,20 +9,22 @@ def sanitize_name(name):
     return name.strip().replace(',', '')
 
 class Connection:
-    def __init__(self, socket, name):
+    def __init__(self, socket, name, ip, port):
         # Sanitize name -- no beginning/ending whitespace, and no commas
         name = sanitize_name(name)
 
         # Check if there's any connection which already have this name
         # If so, reject this new connection
         if name in connections:
-            print(f" --- Rejecting connection from {name} -- there's already another connection with that name connected! ---")
+            print(f" --- Rejecting connection to/from {name} -- there's already another connection with that name connected! ---")
             socket.close()
             return None
         else:
             # TODO generate/exchance secret key?
             self.socket = socket
             self.name = name
+            self.ip = ip
+            self.port = port
             connections[name] = self
 
     # Sends a message

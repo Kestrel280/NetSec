@@ -3,10 +3,14 @@ import argparse
 import socket
 import time
 import signal
+import random
+import threading
 from shared import *
 
 running = True
-server = 0 # Initialize server here so that it's globally scoped
+listen_port = 0
+listener_thread = 0
+server = 0
 my_name = ''
 
 parser = argparse.ArgumentParser()
@@ -17,6 +21,20 @@ def crash_handler(*args):
     global running
     print(f"(CLIENT) Client {my_name} received shutdown signal, shutting down...")
     running = False
+
+def listen_for_peers(listen_socket):
+    while running:
+        try:
+            peer_socket, peer_address = listen_socket.accept()
+            peer_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        except TimeoutError:
+            pass
+        except Exception as e:
+            print("(CLIENT) Error accepting new peer")
+            print(e)
+
+    listen_socket.close()
+    print(f"(CLIENT) Client {my_name} no longer accepting new connections...")
 
 if __name__ == '__main__':
     # Extract args from command line
@@ -32,15 +50,31 @@ if __name__ == '__main__':
     signal.signal(signal.SIGINT, crash_handler)
     signal.signal(signal.SIGTERM, crash_handler)
 
+    # Create a listener socket and give it a thread to live in
+    # This is the socket that other clients can connect to us from
+    _listen_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    _listen_socket.settimeout(3)
+    while listen_port == 0: # Try random ports until finding an unoccupied one
+        try:
+            listen_port = random.randint(20000, 50000)
+            _listen_socket.bind(("0.0.0.0", listen_port))
+        except OSError:
+            listen_port = 0
+    _listen_socket.listen(10)
+    listener_thread = threading.Thread(target = listen_for_peers, args = (_listen_socket,))
+    listener_thread.start()
+    print(f"(CLIENT) Client {my_name} listening for peers on port {listen_port}")
+
     # Create the socket and connect to the server
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.settimeout(3)
     server_socket.connect((server_ip, SERVER_PORT))
-    server = Connection(server_socket, '__SERVER__')
+    server = Connection(server_socket, '__SERVER__', 0, 0)
 
     # Send the server our name & wait for echo response
-    server.send(my_name)
+    server.send(f"{my_name}, {listen_port}")
     server.recv()
+    print(f"(CLIENT) Client {my_name} registered to server")
 
     # --- FLOW 2 ---
     # (1) Every 10 seconds (at minimum), send a "LIST_CLIENTS" message to the server
@@ -74,20 +108,16 @@ if __name__ == '__main__':
                 running = (caddr != '')
                 if (caddr == "ERROR") or (caddr == ''): break
 
-                # TODO: Connect to the new client
+                # Connect to the new client
                 try:
-                    1+1
-                    # ip,port = eval(caddr)
-                    # client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    # client_socket.connect((ip,port))
-                    # connections[client_name] = Connection(client_socket, client_name)
-                    print(f"Connected to {client_name} at {ip}:{port}")
-
-                    # the code is now throwing exception because when the client tries to connect to the other client, there is not listening part
-                    # TODO: The client should listen for other client connection request
+                    cip, cport = caddr.split(',')
+                    print(f"CIP: {cip} | CPORT: {cport}")
+                    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    client_socket.connect((cip, int(cport)))
+                    connections[client_name] = Connection(client_socket, client_name, cip, cport)
+                    print(f"(CLIENT) Client {my_name} connected to {client_name} at {cip}:{cport}")
                 except Exception as e:
-                    pass
-                    # print(f"Failed to connect to {client_name}: {e}")
+                    print(f"(CLIENT) Client {my_name} failed to connect to {client_name} with caddr = {caddr}: {e}")
 
         # (3)
         for (client_name, client) in connections.items():
@@ -102,4 +132,5 @@ if __name__ == '__main__':
             break
 
     server.close()
+    listener_thread.join()
     print(f"(CLIENT) Client {my_name} closed")
