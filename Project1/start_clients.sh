@@ -9,6 +9,7 @@ num_clients=$2
 for i in $(seq 1 $num_clients);
 do
 	python3 client.py --network $server_ip --name Client$i &
+	sleep 0.1
 done
 
 echo "Clients started"

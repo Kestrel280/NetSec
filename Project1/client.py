@@ -55,16 +55,19 @@ def handle_peer(peer_socket, peer_address, establish):
         peer_socket.send(f"{my_name}".encode('utf-8'))
         print(f"(CLIENT) Client {my_name} accepted connection from peer {peer_name}")
 
-    connection = Connection(peer_socket, peer_name, peer_address[0], peer_address[1])
+    try:
+        peer = Connection(peer_socket, peer_name, peer_address[0], peer_address[1])
+    except NameError: # Connection already exists -- return this thread immediately
+        return
 
-    msg = connection.recv()
+    msg = peer.recv()
     while msg != '':
-        print(f"(CLIENT) Client {my_name} received message {msg} from peer {connection.name}")
+        print(f"(CLIENT) Client {my_name} received message {msg} from peer {peer.name}")
         if (msg == "PING"):
-            connection.send("PONG")
-        msg = connection.recv()
-    connection.close()
-    print(f"(CLIENT) Client {my_name} closed connection with peer {connection.name}")
+            peer.send("PONG")
+        msg = peer.recv()
+    peer.close()
+    print(f"(CLIENT) Client {my_name} closed connection with peer {peer.name}")
 
 if __name__ == '__main__':
     # Extract args from command line
@@ -106,61 +109,57 @@ if __name__ == '__main__':
     server.recv()
     print(f"(CLIENT) Client {my_name} registered to server")
 
-    # --- FLOW 2 ---
-    # (1) Every 10 seconds (at minimum), send a "LIST_CLIENTS" message to the server
-    #   The server will respond with a list of client names
-    # (2) For each client name, check if we have already registered that client
-    #   If we haven't, then send a "GET_CLIENT_ADDR [NAME]" msg to server,
-    #   and connect to the address it responds with
-    # (3) Finally, check our list of connected clients:
-    #   if we have an "extras" (e.g. clients that we have registered, but the server doesn't),
-    #   close them. They must have disconnected
+    t_last_flow2 = time.time()
+    t_last_flow3 = t_last_flow2
     while running:
         t = time.time()
-        # (1) - Complete
-        # Send LIST_CLIENTS request
-        running = server.send("LIST_CLIENTS")
-        # Wait for response
-        # If response is empty: server has shut down
-        # Note that we can never receive an empty client list here, since we ourselves are connected
-        msg = server.recv()
-        running = (msg != '')
 
-        # (2) - In progress
-        for client_name in msg.split(','):
+        # --- FLOW 2 --- 
+        if ((t - t_last_flow2) > 10):
+            # Update connections to other peers on the network: establish new connections & remove old ones
+            t_last_flow2 = t
 
-            # If this is a client we haven't connected to yet,
-            #   and it's not us,
-            #   then request its details from the server
-            if ((client_name not in connections) and (client_name != my_name)):
-                running = server.send(f"GET_CLIENT_ADDR {client_name}")
-                caddr = server.recv()
-                running = (caddr != '')
-                if (caddr == "ERROR") or (caddr == ''): break
+            # Send LIST_CLIENTS request to server
+            running = running and server.send("LIST_CLIENTS")
+            # Wait for response. If response is empty: server has shut down
+            # (Note that we can never receive an empty client list here, since we ourselves are connected)
+            msg = server.recv()
+            running = running and (msg != '')
 
-                # Connect to the new client
-                try:
-                    peer_ip, peer_port = caddr.split(',')
-                    peer_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    peer_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                    peer_socket.connect((peer_ip, int(peer_port)))
-                    thread = threading.Thread(target = handle_peer, args = (peer_socket, caddr, True))
-                    thread.start()
-                    peer_threads.append(thread)
-                except Exception as e:
-                    print(f"(CLIENT) Client {my_name} failed to connect to {client_name} with caddr = {caddr}: {e}")
+            # Make sure we are connected to every single client the server tells us exists
+            for client_name in msg.split(','):
 
-        # (3)
-        for (client_name, client) in connections.items():
-            #TODO: delete any clients which no longer exist
-            pass
+                # If this is a client we haven't connected to yet, and it's not us, then request its details from the server
+                if ((client_name not in connections) and (client_name != my_name)):
+                    running = server.send(f"GET_CLIENT_ADDR {client_name}")
+                    caddr = server.recv()
+                    running = running and (caddr != '')
+                    if (caddr == "ERROR") or (caddr == ''): break
 
-        # Delay until the next 10 second interval is reached
-        if running:
-            delay = max(0.0, 10.0 - time.time() + t)
-            time.sleep(delay)
-        else:
-            break
+                    # Connect to the new client
+                    try:
+                        peer_ip, peer_port = caddr.split(',')
+                        peer_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        peer_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                        peer_socket.connect((peer_ip, int(peer_port)))
+                        thread = threading.Thread(target = handle_peer, args = (peer_socket, (peer_ip, int(peer_port)), True))
+                        thread.start()
+                        peer_threads.append(thread)
+                    except Exception as e:
+                        print(f"(CLIENT) Client {my_name} failed to connect to {client_name} with caddr = {caddr}: {e}")
+
+            # Remove old connections
+            for (client_name, client) in connections.items():
+                #TODO: delete any clients which no longer exist
+                pass
+
+        # --- FLOW 3 ---
+        if ((t - t_last_flow3) > 15):
+            t_last_flow3 = t
+            # Send a PING message to all peers
+            for peer in list(connections.values()):
+                if (peer.name == '__SERVER__'): continue
+                peer.send("PING")
 
     server.close()
     listener_thread.join()

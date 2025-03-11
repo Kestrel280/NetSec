@@ -20,7 +20,7 @@ def handle_client(socket, addr):
     socket.send("OK".encode('utf-8'))
 
     client = Connection(socket, client_name, addr[0], client_listen_port)
-    if not client: return # If client constructor returned None, the client couldn't be created; end this thread
+    if client is None: return # If connection constructor returned None, the connection couldn't be created; end this thread immediately
 
     print(f"(SERVER) Client thread spawned for new client {client.name}")
 
@@ -89,7 +89,7 @@ if __name__ == '__main__':
         try:
             client_socket, client_address = listener_socket.accept()
             client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            thread = threading.Thread(target=handle_client, args=(client_socket, client_address))
+            thread = threading.Thread(target = handle_client, args = (client_socket, client_address))
             thread.start()
             client_threads.append(thread)
         except TimeoutError:

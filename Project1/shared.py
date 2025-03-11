@@ -16,9 +16,8 @@ class Connection:
         # Check if there's any connection which already have this name
         # If so, reject this new connection
         if name in connections:
-            print(f" --- Rejecting connection to/from {name} -- there's already another connection with that name connected! ---")
             socket.close()
-            return None
+            raise NameError("Connection already exists")
         else:
             # TODO generate/exchance secret key?
             self.socket = socket
@@ -52,6 +51,9 @@ class Connection:
         # Solution... well, just return what recv SHOULD have returned
         except ConnectionResetError:
             print(" ... unexpected ConnectionResetError")
+            msg = ''
+        except Exception as e:
+            print(f"Unhandled exception in recv: {e}")
             msg = ''
         finally:
             return msg
