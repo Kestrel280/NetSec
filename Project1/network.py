@@ -5,17 +5,13 @@ import signal
 from shared import *
 
 listener_socket = 0 # Initialize listener_socket here so that it's globally scoped
+running = True
+client_threads = []
 
 def crash_handler(*args):
-    print("(SERVER) Server closing, closing listener socket")
-    try:
-        listener_socket.close()
-        for client in connections.values():
-            client.close()
-    except:
-        print("(SERVER) ... Failed to close sockets! netstat -ntp might show the socket in the CLOSE-WAIT state")
-        return
-    print("(SERVER) Socket closed successfully")
+    global running
+    print("(SERVER) Server received shutdown signal, shutting down...")
+    running = False
 
 def handle_client(client_socket):
     # On connection established, first message sent will be the client's name
@@ -60,6 +56,7 @@ def handle_client(client_socket):
 
     # Out of the while loop -- empty message was received, so client must have closed the connection
     # Close the socket on our end
+    #   (In certain cases, this could be redundant/a double-close, which is OK)
     print(f"(SERVER) Client {client.name} has closed connection: closing on our end too")
     client.close()
     return
@@ -75,6 +72,7 @@ if __name__ == '__main__':
     #   to handle the new client
     server_ip = socket.gethostbyname(socket.gethostname())
     listener_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener_socket.settimeout(3)
     listener_socket.bind(("0.0.0.0", SERVER_PORT)) # 0.0.0.0 is to listen for any connections
     listener_socket.listen(10)
 
@@ -84,13 +82,28 @@ if __name__ == '__main__':
     # Whenever a new connection is established,
     #   start a new thread running handle_client
     #   for the new client
-    while True:
+    while running:
         try:
             client_socket, client_address = listener_socket.accept()
-            print(f"client details: {client_socket},{client_address}")
-            threading.Thread(target=handle_client, args=(client_socket,)).start()
-
+            client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            thread = threading.Thread(target=handle_client, args=(client_socket,))
+            thread.start()
+            client_threads.append(thread)
+        except TimeoutError:
+            pass
         except Exception as e:
             print("(SERVER) Error accepting new client, terminating!")
             print(e)
-            exit()
+            running = False
+
+    listener_socket.close()
+    print(f"(SERVER) Server no longer accepting new connections...")
+
+    for client in list(connections.values()):
+        client.close()
+
+    print(f"(SERVER) Server sent close request to all clients...")
+
+    for t in client_threads:
+        t.join()
+    print(f"(SERVER) Server closed successfully")

@@ -5,6 +5,7 @@ import time
 import signal
 from shared import *
 
+running = True
 server = 0 # Initialize server here so that it's globally scoped
 my_name = ''
 
@@ -13,19 +14,16 @@ parser.add_argument("--network", help="Server IP to connect to.", type=str, meta
 parser.add_argument("--name", help="Name to assign to this client.", type=str, metavar="{Client name}", required=True)
 
 def crash_handler(*args):
-    try:
-        server.close()
-        for client in connected_clients.values():
-            client.close()
-    except:
-        return
+    global running
+    print(f"(CLIENT) Client {my_name} received shutdown signal, shutting down...")
+    running = False
 
 if __name__ == '__main__':
     # Extract args from command line
     args = parser.parse_args()
     try:
         server_ip = args.network
-        my_name = args.name
+        my_name = sanitize_name(args.name)
     except:
         print("Illegal arguments")
         exit()
@@ -36,6 +34,7 @@ if __name__ == '__main__':
 
     # Create the socket and connect to the server
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server_socket.settimeout(3)
     server_socket.connect((server_ip, SERVER_PORT))
     server = Connection(server_socket, '__SERVER__')
 
@@ -52,30 +51,43 @@ if __name__ == '__main__':
     # (3) Finally, check our list of connected clients:
     #   if we have an "extras" (e.g. clients that we have registered, but the server doesn't),
     #   close them. They must have disconnected
-    while True:
+    while running:
         t = time.time()
         # (1) - Complete
-        server.send("LIST_CLIENTS")
+        # Send LIST_CLIENTS request
+        running = server.send("LIST_CLIENTS")
+        # Wait for response
+        # If response is empty: server has shut down
+        # Note that we can never receive an empty client list here, since we ourselves are connected
         msg = server.recv()
+        running = (msg != '')
 
         # (2) - In progress
         for client_name in msg.split(','):
-            if client_name not in connections:
-                server.send(f"GET_CLIENT_ADDR {client_name}")
-                caddr = server.recv()
-                # TODO: Connect to caddr, register client
-                if caddr != "ERROR":
-                    try:
-                        ip,port = eval(caddr)
-                        client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                        client_socket.connect((ip,port))
-                        connections[client_name] = Connection(client_socket, client_name)
-                        print(f"Connected to {client_name} at {ip}:{port}")
 
-                        # the code is now throwing exception because when the client tries to connect to the other client, there is not listening part
-                        # TODO: The client should listen for other client connection request
-                    except Exception as e:
-                        print(f"Failed to connect to {client_name}: {e}")
+            # If this is a client we haven't connected to yet,
+            #   and it's not us,
+            #   then request its details from the server
+            if ((client_name not in connections) and (client_name != my_name)):
+                running = server.send(f"GET_CLIENT_ADDR {client_name}")
+                caddr = server.recv()
+                running = (caddr != '')
+                if (caddr == "ERROR") or (caddr == ''): break
+
+                # TODO: Connect to the new client
+                try:
+                    1+1
+                    # ip,port = eval(caddr)
+                    # client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    # client_socket.connect((ip,port))
+                    # connections[client_name] = Connection(client_socket, client_name)
+                    print(f"Connected to {client_name} at {ip}:{port}")
+
+                    # the code is now throwing exception because when the client tries to connect to the other client, there is not listening part
+                    # TODO: The client should listen for other client connection request
+                except Exception as e:
+                    pass
+                    # print(f"Failed to connect to {client_name}: {e}")
 
         # (3)
         for (client_name, client) in connections.items():
@@ -83,8 +95,11 @@ if __name__ == '__main__':
             pass
 
         # Delay until the next 10 second interval is reached
-        delay = max(0.0, 10.0 - time.time() + t)
-        time.sleep(delay)
+        if running:
+            delay = max(0.0, 10.0 - time.time() + t)
+            time.sleep(delay)
+        else:
+            break
 
-    print("-- Client escaped main loop!!! --")
     server.close()
+    print(f"(CLIENT) Client {my_name} closed")
