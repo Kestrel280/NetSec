@@ -5,7 +5,8 @@ import time
 import atexit
 from shared import *
 
-server_socket = 0 # Initialize server_socket here so that it's globally scoped
+server = 0 # Initialize server here so that it's globally scoped
+my_name = ''
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--network", help="Server IP to connect to.", type=str, metavar="{Server IP}", required=True)
@@ -13,7 +14,7 @@ parser.add_argument("--name", help="Name to assign to this client.", type=str, m
 
 def crash_handler(*args):
     try:
-        server_socket.close()
+        server.close()
         for client in connected_clients.values():
             client.close()
     except:
@@ -24,7 +25,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
     try:
         server_ip = args.network
-        client_name = args.name
+        my_name = args.name
     except:
         print("Illegal arguments")
         exit()
@@ -35,13 +36,11 @@ if __name__ == '__main__':
     # Create the socket and connect to the server
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.connect((server_ip, SERVER_PORT))
+    server = Connection(server_socket, '__SERVER__')
 
     # Send the server our name & wait for echo response
-    server_socket.send(client_name.encode('utf-8'))
-    server_socket.recv(1024)
-
-    # Create a Connection helper object to talk to server
-    server = Connection(server_socket, '__SERVER__')
+    server.send(my_name)
+    server.recv()
 
     # --- FLOW 2 ---
     # (1) Every 10 seconds (at minimum), send a "LIST_CLIENTS" message to the server
