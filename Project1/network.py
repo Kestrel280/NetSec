@@ -1,7 +1,7 @@
 import sys
 import socket
 import threading
-import atexit
+import signal
 from shared import *
 
 listener_socket = 0 # Initialize listener_socket here so that it's globally scoped
@@ -66,7 +66,8 @@ def handle_client(client_socket):
 
 if __name__ == '__main__':
     # Register emergency-termination function (to close sockets in case of crash)
-    atexit.register(crash_handler)
+    signal.signal(signal.SIGINT, crash_handler)
+    signal.signal(signal.SIGTERM, crash_handler)
 
     # Create and initialize the listener socket
     # The role of this socket is just to listen for incoming connections

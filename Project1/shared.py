@@ -43,4 +43,5 @@ class Connection:
     def close(self):
         try: self.socket.close()
         except: pass
-        del connections[self.name]
+        try: del connections[self.name]
+        except KeyError: pass

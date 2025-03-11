@@ -2,7 +2,7 @@ import sys
 import argparse
 import socket
 import time
-import atexit
+import signal
 from shared import *
 
 server = 0 # Initialize server here so that it's globally scoped
@@ -31,7 +31,8 @@ if __name__ == '__main__':
         exit()
 
     # Register emergency-termination function (to close socket in case of crash)
-    atexit.register(crash_handler)
+    signal.signal(signal.SIGINT, crash_handler)
+    signal.signal(signal.SIGTERM, crash_handler)
 
     # Create the socket and connect to the server
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
