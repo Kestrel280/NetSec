@@ -10,6 +10,7 @@ from shared import *
 running = True
 listen_port = 0
 listener_thread = 0
+peer_threads = []
 server = 0
 my_name = ''
 
@@ -27,6 +28,9 @@ def listen_for_peers(listen_socket):
         try:
             peer_socket, peer_address = listen_socket.accept()
             peer_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            thread = threading.Thread(target = handle_peer, args = (peer_socket, peer_address, False))
+            thread.start()
+            peer_threads.append(thread)
         except TimeoutError:
             pass
         except Exception as e:
@@ -35,6 +39,32 @@ def listen_for_peers(listen_socket):
 
     listen_socket.close()
     print(f"(CLIENT) Client {my_name} no longer accepting new connections...")
+
+def handle_peer(peer_socket, peer_address, establish):
+    # Two ways to enter this function:
+    #   1. We requested a peer's details from the server, and are connecting to them directly
+    #       In this case, 'establish' should be true: we establish the connection by send the first message
+    #   2. Our own listener socket accepted a connection
+    #       In this case, 'initiate' should be false: the peer will establish the connection by sending the first message
+    if establish: 
+        peer_socket.send(f"{my_name}".encode('utf-8'))
+        peer_name = peer_socket.recv(1024).decode('utf-8')
+        print(f"(CLIENT) Client {my_name} established connection with peer {peer_name}")
+    else:
+        peer_name = peer_socket.recv(1024).decode('utf-8')
+        peer_socket.send(f"{my_name}".encode('utf-8'))
+        print(f"(CLIENT) Client {my_name} accepted connection from peer {peer_name}")
+
+    connection = Connection(peer_socket, peer_name, peer_address[0], peer_address[1])
+
+    msg = connection.recv()
+    while msg != '':
+        print(f"(CLIENT) Client {my_name} received message {msg} from peer {connection.name}")
+        if (msg == "PING"):
+            connection.send("PONG")
+        msg = connection.recv()
+    connection.close()
+    print(f"(CLIENT) Client {my_name} closed connection with peer {connection.name}")
 
 if __name__ == '__main__':
     # Extract args from command line
@@ -110,12 +140,13 @@ if __name__ == '__main__':
 
                 # Connect to the new client
                 try:
-                    cip, cport = caddr.split(',')
-                    print(f"CIP: {cip} | CPORT: {cport}")
-                    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    client_socket.connect((cip, int(cport)))
-                    connections[client_name] = Connection(client_socket, client_name, cip, cport)
-                    print(f"(CLIENT) Client {my_name} connected to {client_name} at {cip}:{cport}")
+                    peer_ip, peer_port = caddr.split(',')
+                    peer_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    peer_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    peer_socket.connect((peer_ip, int(peer_port)))
+                    thread = threading.Thread(target = handle_peer, args = (peer_socket, caddr, True))
+                    thread.start()
+                    peer_threads.append(thread)
                 except Exception as e:
                     print(f"(CLIENT) Client {my_name} failed to connect to {client_name} with caddr = {caddr}: {e}")
 
