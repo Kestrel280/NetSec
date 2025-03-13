@@ -1,6 +1,7 @@
 import socket
 
 SERVER_PORT = 10179
+RSA_KEY_SIZE = 2048
 
 # Dictionary of all connected clients, as key-value pairs of connection_name:Connection_obj
 connections = {}

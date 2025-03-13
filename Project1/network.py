@@ -2,6 +2,9 @@ import sys
 import socket
 import threading
 import signal
+import os
+from Crypto.PublicKey import RSA
+from Crypto.Cipher import PKCS1_OAEP, AES
 from shared import *
 
 listener_socket = 0 # Initialize listener_socket here so that it's globally scoped
@@ -14,10 +17,32 @@ def crash_handler(*args):
     running = False
 
 def handle_client(socket, addr):
-    # On connection established, first message sent will be the client's name
-    # Respond with an OK just to proceed/synchronize
-    client_name, client_listen_port = socket.recv(1024).decode('utf-8').split(',')
+    # On connection established, 3 messages -- name, listen port, then public key
+    client_name = socket.recv(1024).decode('utf-8')
     socket.send("OK".encode('utf-8'))
+    client_listen_port = socket.recv(1024).decode('utf-8')
+    socket.send("OK".encode('utf-8'))
+    _client_pub_key = socket.recv(1024).decode('utf-8')
+    # Don't send OK here -- gonna send keys next
+    print(f"client_name: {client_name}")
+    print(f"client_listen_port: {client_listen_port}")
+    print(f"_client_pub_key: {_client_pub_key}")
+    client_pub_key = RSA.importKey(_client_pub_key)
+
+    # Generate a symmetric key to use for this client
+    client_aes_key = os.urandom(16)
+
+    # Encrypt the symmetric key using the client's public key
+    client_pub_enc_obj = PKCS1_OAEP.new(client_pub_key)
+    client_aes_key_enc = client_pub_enc_obj.encrypt(client_aes_key)
+
+    # Send my public key + the encrypted symmetric key to the client 
+    socket.send(_exp_my_rsa_pub)
+    if (socket.recv(1024).decode('utf-8') != "OK"):
+        crash_handler()
+    socket.send(client_aes_key_enc)
+    if (socket.recv(1024).decode('utf-8') != "OK"):
+        crash_handler()
 
     client = Connection(socket, client_name, addr[0], client_listen_port)
     if client is None: return # If connection constructor returned None, the connection couldn't be created; end this thread immediately
@@ -68,6 +93,12 @@ if __name__ == '__main__':
     # Register emergency-termination function (to close sockets in case of crash)
     signal.signal(signal.SIGINT, crash_handler)
     signal.signal(signal.SIGTERM, crash_handler)
+
+    # Generate an RSA key
+    my_rsa_priv = RSA.generate(RSA_KEY_SIZE)
+    my_rsa_pub = my_rsa_priv.public_key()
+    _exp_my_rsa_pub = my_rsa_pub.exportKey()
+    print(f"(SERVER) Server generated RSA key")
 
     # Create and initialize the listener socket
     # The role of this socket is just to listen for incoming connections

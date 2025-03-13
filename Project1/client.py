@@ -5,6 +5,8 @@ import time
 import signal
 import random
 import threading
+from Crypto.PublicKey import RSA
+from Crypto.Cipher import PKCS1_OAEP, AES
 from shared import *
 
 running = True
@@ -83,6 +85,13 @@ if __name__ == '__main__':
     signal.signal(signal.SIGINT, crash_handler)
     signal.signal(signal.SIGTERM, crash_handler)
 
+    # Generate an RSA key
+    my_rsa_priv = RSA.generate(RSA_KEY_SIZE)
+    my_rsa_pub = my_rsa_priv.public_key()
+    _exp_my_rsa_pub = my_rsa_pub.exportKey()
+    print(f"(CLIENT) Client {my_name} generated RSA key")
+    print(f"(CLIENT) Client {my_name} public RSA key: {_exp_my_rsa_pub}")
+
     # Create a listener socket and give it a thread to live in
     # This is the socket that other clients can connect to us from
     _listen_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -102,11 +111,26 @@ if __name__ == '__main__':
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.settimeout(3)
     server_socket.connect((server_ip, SERVER_PORT))
-    server = Connection(server_socket, '__SERVER__', 0, 0)
 
-    # Send the server our name & wait for echo response
-    server.send(f"{my_name}, {listen_port}")
-    server.recv()
+    # Send the server our name, public key, and listen port,
+    #   & wait for echo response
+    server_socket.send(f"{my_name}".encode('utf-8'))
+    if (server_socket.recv(1024).decode('utf-8') != "OK"):
+        crash_handler()
+    server_socket.send(f"{listen_port}".encode('utf-8'))
+    if (server_socket.recv(1024).decode('utf-8') != "OK"):
+        crash_handler()
+    server_socket.send(_exp_my_rsa_pub)
+
+    print(f"(CLIENT) Client {my_name} received:")
+    print(server_socket.recv(1024))
+    server_socket.send("OK".encode('utf-8'))
+
+    print(f"(CLIENT) Client {my_name} received:")
+    print(server_socket.recv(1024))
+    server_socket.send("OK".encode('utf-8'))
+
+    server = Connection(server_socket, '__SERVER__', 0, 0)
     print(f"(CLIENT) Client {my_name} registered to server")
 
     t_last_flow2 = time.time()
