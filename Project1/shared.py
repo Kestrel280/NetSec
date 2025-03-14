@@ -43,14 +43,16 @@ class Connection:
         # Generate the ciphertext and tag
         if (plaintext == ''): msg = ''
         else:
-            msg = plaintext.encode('utf-8') if encutf8 else plaintext
-
             # Encryption
-            """
-            ciphertext, tag = self.sym_encrypter.encrypt_and_digest(plaintext.encode('utf-8') if encutf8 else plaintext)
-            auth = self.priv_crypter.encrypt(SHA3_512.new(plaintext))
-            msg = f"{len(ciphertext)},{len(tag)},{len(auth)}.{ciphertext}{tag}{auth}"
-            """
+            plaintext = plaintext.encode('utf-8') if encutf8 else plaintext
+            ciphertext, tag = self.sym_encrypter.encrypt_and_digest(plaintext)
+            auth = self.priv_crypter.encrypt(SHA3_512.new(plaintext).digest())
+
+            msg = bytearray()
+            msg += "{},{},{}.".format(len(ciphertext), len(tag), len(auth)).encode('utf-8')
+            msg.extend(ciphertext)
+            msg.extend(tag)
+            msg.extend(auth)
 
         try:
             self.socket.send(msg)
@@ -62,33 +64,44 @@ class Connection:
     #   If the message is empty, indicates that the recipient has closed the connection
     def recv(self):
         try:
-            msg = self.socket.recv(1024).decode('utf-8')
+            msg = self.socket.recv(1024)
             if (msg == ''): return msg
 
+            print(f"msg received: {msg}")
+
+            header = msg.split(b'.')[0].decode('utf-8')
+            payload = b''.join(msg.split(b'.')[1:])
+
             # Decryption
-            """
-            ciphertext_len  = msg.split(',')[0]
-            tag_len         = msg.split(',')[1]
-            auth_len        = msg.split(',')[2].split('.')[0]
+            ciphertext_len  = int(header.split(',')[0])
+            tag_len         = int(header.split(',')[1])
+            auth_len        = int(header.split(',')[2])
+            
+            print(f"ciphertext_len: {ciphertext_len}")
+            print(f"tag_len: {tag_len}")
+            print(f"auth_len: {auth_len}")
 
-            ciphertext      = msg.split('.')[1][:ciphertext_len]
-            tag             = msg.split('.')[1][ciphertext_len : ciphertext_len + tag_len]
-            auth            = msg.split('.')[1][ciphertext_len + tag_len :]
+            ciphertext      = payload[:ciphertext_len]
+            tag             = payload[ciphertext_len : ciphertext_len + tag_len]
+            auth            = payload[ciphertext_len + tag_len :]
 
-            msg = self.sym_decrypter.decrypt_and_verify(ciphertext, tag)
+            print(f"ciphertext: {ciphertext}")
+            print(f"tag: {tag}")
+            print(f"auth: {auth}")
+
+            plaintext = self.sym_decrypter.decrypt_and_verify(ciphertext, tag).decode('utf-8')
             # TODO decrypt auth, check against hash of msh
-            """
         
         # Sometimes when client closes connection, instead of recv just returning an empty message,
         #   it throws this exception. Solution... well, just return what recv SHOULD have returned (empty message)
         except ConnectionResetError:
             print(" ... unexpected ConnectionResetError")
-            msg = ''
+            plaintext = ''
         except Exception as e:
             print(f"Unhandled exception in recv: {e}")
-            msg = ''
+            plaintext = ''
         finally:
-            return msg
+            return plaintext
         
     # Closes the connection
     def close(self):
