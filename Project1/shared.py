@@ -33,9 +33,9 @@ class Connection:
     # Sends a message
     #   Returns True if successfully sent
     #   Returns False if message could not be sent (recipient has closed connection)
-    def send(self, msg : str):
+    def send(self, msg, enc = True):
         try:
-            self.socket.send(msg.encode('utf-8'))
+            self.socket.send(msg.encode('utf-8') if enc else msg)
             return True
         except BrokenPipeError: # Recipient closed connection
             return False
@@ -43,9 +43,9 @@ class Connection:
     # Blocks until a message is received
     #   Returns the message
     #   If the message is empty, indicates that the recipient has closed the connection
-    def recv(self):
+    def recv(self, dec = True):
         try:
-            msg = self.socket.recv(1024).decode('utf-8')
+            msg = self.socket.recv(1024).decode('utf-8') if dec else self.socket.recv(1024)
         
         # Sometimes when client closes connection, instead of recv just returning an empty message,
         #   it throws this exception. Solution... well, just return what recv SHOULD have returned (empty message)

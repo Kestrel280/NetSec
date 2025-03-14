@@ -39,7 +39,7 @@ def listen_for_peers(listen_socket):
         try:
             peer_socket, peer_address = listen_socket.accept()
             peer_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            thread = threading.Thread(target = handle_peer, args = (peer_socket, peer_address, False))
+            thread = threading.Thread(target = handle_peer, args = (peer_socket, peer_address, 'UNKNOWN_CLIENT', False))
             thread.start()
             peer_threads.append(thread)
         except TimeoutError:
@@ -51,7 +51,7 @@ def listen_for_peers(listen_socket):
     listen_socket.close()
     print(f"(CLIENT) Client {my_name} no longer accepting new connections...")
 
-def handle_peer(peer_socket, peer_address, establish):
+def handle_peer(peer_socket, peer_address, peer_name, establish):
     '''
     Function which runs in its own thread and handles all communications with a single peer.
     Threads with this function can be spawned in two ways, depending if we're the one initiating the connection or not:
@@ -64,47 +64,38 @@ def handle_peer(peer_socket, peer_address, establish):
 
     # --- We are initiating the connection-establish protocol ---
     if establish: 
-        # Send our name, then our public key. Wait for OKs
-        peer_socket.send(f"{my_name}".encode('utf-8'))              # 1
-        peer_name = peer_socket.recv(1024).decode('utf-8')          # 2
+        # Get the peer's public key from the server (Getting it from the peer directly would enable an easier MITM attack)
+        server.send(f"GET_PUBLIC_KEY {peer_name}")                              # 0.1 Send request for peer public key
+        peer_pub_key = RSA.importKey(server.recv())                             # 0.2 Receive peer public key
 
-        # Send our public key
-        # print(f"Sending public key to {peer_name}")
-        peer_socket.send(_exp_my_rsa_pub)                           # 3
-
-        # Wait for peer to send its public key
-        _peer_pub_key = peer_socket.recv(1024)                      # 4
-        # print(f"(CLIENT) Client {my_name} received {peer_name} public key: {_peer_pub_key}")
-        peer_pub_key = RSA.importKey(_peer_pub_key)
+        # Send our name to the peer and wait for OK
+        peer_socket.send(f"{my_name}".encode('utf-8'))                          # 1.1 Send my name
+        if (peer_socket.recv(1024).decode('utf-8') != "OK"):                    # 2 Receive OK to generate sym key
+            crash_handler()
 
         # Generate a symmetric key to use for this peer
-        symm_key = os.urandom(16)
-
         # Encrypt the symmetric key using the peer's public key and send it, wait for OK
+        symm_key = os.urandom(16)
         peer_aes_key_enc = PKCS1_OAEP.new(peer_pub_key).encrypt(symm_key)
-        peer_socket.send(peer_aes_key_enc)                          # 5
-        if (peer_socket.recv(1024).decode('utf-8') != "OK"):        # 6
+        peer_socket.send(peer_aes_key_enc)                                      # 3 Send encrypted sym key
+        if (peer_socket.recv(1024).decode('utf-8') != "OK"):                    # 4 Receive OK
             crash_handler()
         
     # --- The peer is initiating the connection-establish protocol ---
     else:
-        # Peer will send its name and public key; send OK after name
-        peer_name = peer_socket.recv(1024).decode('utf-8')          # 1
-        peer_socket.send(f"{my_name}".encode('utf-8'))              # 2
-        _peer_pub_key = peer_socket.recv(1024)                      # 3
-        # print(f"(CLIENT) Client {my_name} received {peer_name} public key: {_peer_pub_key}")
-        peer_pub_key = RSA.importKey(_peer_pub_key)
+        # Peer will first send its name
+        peer_name = peer_socket.recv(1024).decode('utf-8')                      # 1.1 Receive peer's name
 
-        # Send our public key, wait for OK
-        peer_socket.send(_exp_my_rsa_pub)                           # 4
+        # Ask the server for the public key of this peer
+        server.send(f"GET_PUBLIC_KEY {peer_name}")                              # 1.2 Ask server for peer's public key
+        peer_pub_key = RSA.importKey(server.recv(1024))                         # 1.3 Receive peer's public key
+
+        # Send OK
+        peer_socket.send("OK".encode('utf-8'))                                  # 2 Send OK to generate sym key
         
-        # Peer will generate and send symmetric key, encrypted using my private key
-        # Receive, decrypt, and send OK
-        _symm_key_enc = peer_socket.recv(1024)                      # 5
-        symm_key = rsa_dec_obj_my_priv.decrypt(_symm_key_enc)
-
-        print(f"(CLIENT) Client {my_name} received and decrypted symmetric key")
-        peer_socket.send("OK".encode('utf-8'))                      # 6
+        # Peer will generate and send symmetric key, encrypted using my private key. Receive, decrypt, send OK
+        symm_key = rsa_dec_obj_my_priv.decrypt(peer_socket.recv(1024))          # 3 Receive and decrypt sym key
+        peer_socket.send("OK".encode('utf-8'))                                  # 4 Send OK
 
     # Create a Connection object for this peer
     try:
@@ -146,9 +137,8 @@ if __name__ == '__main__':
     # Generate an RSA key and a private-key-decryption-object (for use with the server; each peer will get its own decryption object)
     my_rsa_priv = RSA.generate(RSA_KEY_SIZE)
     my_rsa_pub = my_rsa_priv.public_key()
-    _exp_my_rsa_pub = my_rsa_pub.exportKey()
     my_rsa_priv_dec_obj = PKCS1_OAEP.new(my_rsa_priv)
-    # print(f"(CLIENT) Client {my_name} generated RSA key -- public: {_exp_my_rsa_pub}")
+    # print(f"(CLIENT) Client {my_name} generated RSA key -- public: {my_rsa_pub.exportKey()}")
     
     # Create a listener socket and give it a thread to live in
     # This is the socket that other clients can connect to us from
@@ -177,6 +167,7 @@ if __name__ == '__main__':
     server_socket.send(f"{listen_port}".encode('utf-8'))
     if (server_socket.recv(1024).decode('utf-8') != "OK"):
         crash_handler()
+    _exp_my_rsa_pub = my_rsa_pub.exportKey()
     server_socket.send(_exp_my_rsa_pub)
 
     # Server will send its public RSA key, then a symmetric key (encrypted using our private key)
@@ -224,7 +215,7 @@ if __name__ == '__main__':
                         peer_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                         peer_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                         peer_socket.connect((peer_ip, int(peer_port)))
-                        thread = threading.Thread(target = handle_peer, args = (peer_socket, (peer_ip, int(peer_port)), True))
+                        thread = threading.Thread(target = handle_peer, args = (peer_socket, (peer_ip, int(peer_port)), client_name, True))
                         thread.start()
                         peer_threads.append(thread)
                     except Exception as e:

@@ -70,6 +70,7 @@ def handle_client(socket, addr):
         # First (or only) token of message is the command
         cmd = msg.split(' ')[0]
         response = 'OK'
+        _enc = True
 
         # Dispatch logic depending on what command was received
         # (Note: no fallthrough in Python match-case statements, so no breaks)
@@ -95,14 +96,15 @@ def handle_client(socket, addr):
                 try: 
                     arg = msg.split(' ')[1]
                     if arg in connections:
-                        response = f"{connections[arg].public_key}"
+                        response = connections[arg].pub_key.exportKey()
+                        _enc = False
                     else: raise KeyError(f"No details available for '{arg}'")
                 except Exception as e: 
                     print(f"(SERVER) Error getting details for {arg}, requested by {client.name}: {e}")
                     response = 'ERROR'
 
-        client.send(response)
-        print(f"(SERVER) Received msg '{msg}' from Client {client.name}; responded '{response}'")
+        client.send(response, enc = _enc)
+        print("(SERVER) Received msg \"{}\" from Client {}; responded '{}'".format(msg if len(msg) < 50 else f"{msg[:47]}...", client_name, response if len(response) < 50 else f"{response[:47]}..."))
         
         # Await next message (or empty message, if client closes connection)
         msg = client.recv()
