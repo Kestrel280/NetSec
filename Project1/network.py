@@ -42,9 +42,9 @@ def handle_client(socket, addr):
     # Generate a symmetric key for use with this client
     # Generate a crypter object for the client's public key and use it to encrypt the symmetric key
     # Encrypt the symmetric key using the client's public key
-    client_sym_key = os.urandom(16)
-    print("SERVER GENERATED SYM KEY:")
-    print(client_sym_key)
+    client_sym_key = os.urandom(32)
+    # print("SERVER GENERATED SYM KEY:")
+    # print(client_sym_key)
     client_pub_crypter = PKCS1_OAEP.new(client_pub_key)
     _client_sym_key_enc = client_pub_crypter.encrypt(client_sym_key)
 

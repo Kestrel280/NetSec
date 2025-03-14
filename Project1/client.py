@@ -82,14 +82,6 @@ def handle_peer(peer_socket, peer_address, peer_name, establish):
         peer_aes_key_enc = peer_pub_crypter.encrypt(peer_sym_key)
         peer_socket.send(peer_aes_key_enc)                                      # 3 Send encrypted sym key
 
-        # Receive their encrypted nonce, decrypt it, create our decrypter, send our encrypter nonce
-        _peer_nonce_enc = peer_socket.recv(1024)                                # 4 Receive their encrypter nonce
-        peer_nonce = peer_priv_crypter.decrypt(_peer_nonce_enc)
-        peer_sym_decrypter = AES.new(peer_sym_key, AES.MODE_GCM, nonce = peer_nonce)
-
-        _my_nonce_enc = peer_pub_crypter.encrypt(peer_sym_encrypter.nonce)
-        peer_socket.send(_my_nonce_enc)                                         # 5 Send our encrypter nonce, encrypted using their public RSA key
-
         if (peer_socket.recv(1024).decode('utf-8') != "OK"):                    # 6 Receive OK
             crash_handler()
         
@@ -124,7 +116,7 @@ def handle_peer(peer_socket, peer_address, peer_name, establish):
         print(f"(CLIENT) Client {my_name} failed to connect to peer {peer_name} with error {e}")
         return
 
-    print("(CLIENT) Client {} {} connection from peer {}".format(my_name, "established" if establish else "accepted", peer_name))
+    print("(CLIENT) Client {} {} connection with peer {}".format(my_name, "established" if establish else "accepted", peer_name))
 
     # Begin message loop
     msg = peer.recv()
@@ -194,8 +186,8 @@ if __name__ == '__main__':
     # Server will send symmetric key (encrypted using my public key)
     _server_sym_key_enc = server_socket.recv(1024)
     server_sym_key = server_priv_crypter.decrypt(_server_sym_key_enc)
-    print("CLIENT RECEIVED SYM KEY:")
-    print(server_sym_key)
+    # print("CLIENT RECEIVED SYM KEY:")
+    # print(server_sym_key)
 
     # Send OK
     server_socket.send("OK".encode('utf-8'))
