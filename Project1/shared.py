@@ -76,7 +76,7 @@ class Connection:
     def recv(self):
         try:
             msg = self.socket.recv(1024)
-            if (msg == ''): return msg
+            if (msg == b''): return ''
 
             # print(f"msg received: {msg}")
 
