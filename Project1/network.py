@@ -43,28 +43,20 @@ def handle_client(socket, addr):
     # Generate a crypter object for the client's public key and use it to encrypt the symmetric key
     # Encrypt the symmetric key using the client's public key
     client_sym_key = os.urandom(16)
+    print("SERVER GENERATED SYM KEY:")
+    print(client_sym_key)
     client_pub_crypter = PKCS1_OAEP.new(client_pub_key)
     _client_sym_key_enc = client_pub_crypter.encrypt(client_sym_key)
 
-    # Send the encrypted symmetric key to the client
-    # Receive back the client's nonce for their symmetric encrypter object, use it to create our decrypter object
+    # Send the encrypted symmetric key to the client, receive OK
     socket.send(_client_sym_key_enc)
-    _client_nonce_enc = socket.recv(1024)
-    client_nonce = client_priv_crypter.decrypt(_client_nonce_enc)
-    client_sym_decrypter = AES.new(client_sym_key, AES.MODE_GCM, nonce = client_nonce)
 
-    # Generate our symmetric encrypter object
-    # Get its nonce and encrypt it using their public key
-    # Send the encrypted nonce
-    client_sym_encrypter = AES.new(client_sym_key, AES.MODE_GCM)
-    _my_nonce_enc = client_pub_crypter.encrypt(client_sym_encrypter.nonce)
-    socket.send(_my_nonce_enc)
     if (socket.recv(1024).decode('utf-8') != "OK"):
         crash_handler()
 
     # All set -- create a Connection object to store all the info on this client
     try:
-        client = Connection(socket, client_name, addr[0], client_listen_port, client_pub_key, client_pub_crypter, client_priv_crypter, client_sym_encrypter, client_sym_decrypter)
+        client = Connection(socket, client_name, addr[0], client_listen_port, client_pub_key, client_pub_crypter, client_priv_crypter, client_sym_key)
     except NameError as e:
         print(f"(SERVER) Server received connection request from client {client_name}, but a client with that name already exists")
         print(e)

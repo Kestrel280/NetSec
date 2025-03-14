@@ -1,5 +1,6 @@
 import socket
 from Crypto.Hash import SHA3_512
+from Crypto.Cipher import PKCS1_OAEP, AES
 
 SERVER_PORT = 10179
 RSA_KEY_SIZE = 2048
@@ -11,9 +12,7 @@ def sanitize_name(name):
     return name.strip().replace(',', '')
 
 class Connection:
-    def __init__(self, socket, name, ip, port, pub_key, 
-                 pub_crypter, priv_crypter,     # Assymetric encryption/decryption objects
-                 sym_encrypter, sym_decrypter): # Symmetric encryption/decryption objects
+    def __init__(self, socket, name, ip, port, pub_key, pub_crypter, priv_crypter, sym_key):
         # Sanitize name -- no beginning/ending whitespace, and no commas
         name = sanitize_name(name)
 
@@ -30,8 +29,7 @@ class Connection:
             self.pub_key = pub_key
             self.pub_crypter = pub_crypter
             self.priv_crypter = priv_crypter
-            self.sym_encrypter = sym_encrypter
-            self.sym_decrypter = sym_decrypter
+            self.sym_key = sym_key
 
             # Register this connection to the global connections object
             connections[name] = self
@@ -45,14 +43,27 @@ class Connection:
         else:
             # Encryption
             plaintext = plaintext.encode('utf-8') if encutf8 else plaintext
-            ciphertext, tag = self.sym_encrypter.encrypt_and_digest(plaintext)
+            encrypter = AES.new(self.sym_key, AES.MODE_GCM)
+            ciphertext, tag = encrypter.encrypt_and_digest(plaintext)
             auth = self.priv_crypter.encrypt(SHA3_512.new(plaintext).digest())
+            nonce = encrypter.nonce
+            header = "{},{},{},{}.".format(len(ciphertext), len(tag), len(auth), len(nonce)).encode('utf-8')
+
+            # print(f"sent ciphertext_len: {len(ciphertext)}")
+            # print(f"sent tag_len: {len(tag)}")
+            # print(f"sent auth_len: {len(auth)}")
+            # print(f"sent nonce_len: {len(nonce)}")
+            # print(f"sent ciphertext: {ciphertext}")
+            # print(f"sent tag: {tag}")
+            # print(f"sent auth: {auth}")
+            # print(f"sent nonce: {nonce}")
 
             msg = bytearray()
-            msg += "{},{},{}.".format(len(ciphertext), len(tag), len(auth)).encode('utf-8')
+            msg += header
             msg.extend(ciphertext)
             msg.extend(tag)
             msg.extend(auth)
+            msg.extend(nonce)
 
         try:
             self.socket.send(msg)
@@ -67,29 +78,34 @@ class Connection:
             msg = self.socket.recv(1024)
             if (msg == ''): return msg
 
-            print(f"msg received: {msg}")
+            # print(f"msg received: {msg}")
 
             header = msg.split(b'.')[0].decode('utf-8')
-            payload = b''.join(msg.split(b'.')[1:])
+            payload = b'.'.join(msg.split(b'.')[1:])
 
             # Decryption
             ciphertext_len  = int(header.split(',')[0])
             tag_len         = int(header.split(',')[1])
             auth_len        = int(header.split(',')[2])
+            nonce_len       = int(header.split(',')[3])
             
-            print(f"ciphertext_len: {ciphertext_len}")
-            print(f"tag_len: {tag_len}")
-            print(f"auth_len: {auth_len}")
+            # print(f"rcvd ciphertext_len: {ciphertext_len}")
+            # print(f"rcvd tag_len: {tag_len}")
+            # print(f"rcvd auth_len: {auth_len}")
+            # print(f"rcvd nonce_len: {nonce_len}")
 
             ciphertext      = payload[:ciphertext_len]
             tag             = payload[ciphertext_len : ciphertext_len + tag_len]
-            auth            = payload[ciphertext_len + tag_len :]
+            auth            = payload[ciphertext_len + tag_len : ciphertext_len + tag_len + auth_len]
+            nonce           = payload[ciphertext_len + tag_len + auth_len :]
 
-            print(f"ciphertext: {ciphertext}")
-            print(f"tag: {tag}")
-            print(f"auth: {auth}")
+            # print(f"rcvd ciphertext: {ciphertext}")
+            # print(f"rcvd tag: {tag}")
+            # print(f"rcvd auth: {auth}")
+            # print(f"rcvd nonce: {nonce}")
 
-            plaintext = self.sym_decrypter.decrypt_and_verify(ciphertext, tag).decode('utf-8')
+            decrypter = AES.new(self.sym_key, AES.MODE_GCM, nonce)
+            plaintext = decrypter.decrypt_and_verify(ciphertext, tag).decode('utf-8')
             # TODO decrypt auth, check against hash of msh
         
         # Sometimes when client closes connection, instead of recv just returning an empty message,
