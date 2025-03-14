@@ -10,23 +10,31 @@ from Crypto.PublicKey import RSA
 from Crypto.Cipher import PKCS1_OAEP, AES
 from shared import *
 
-running = True
-listen_port = 0
-listener_thread = 0
-peer_threads = []
-server = 0
-my_name = ''
+# Globals
+running = True          # Flag used to manage running state
+listener_thread = 0     # Thread which is listening for connections from peer clients
+peer_threads = []       # Array of threads which are managing peer clients
+listen_port = 0         # Port on which we are listening for connections from peer clients
+server = 0              # Connection object to the server
+my_name = ''            # This client's name (passed by --name argument)
 
+# Require 2 arguments: --network and --name
 parser = argparse.ArgumentParser()
 parser.add_argument("--network", help="Server IP to connect to.", type=str, metavar="{Server IP}", required=True)
 parser.add_argument("--name", help="Name to assign to this client.", type=str, metavar="{Client name}", required=True)
 
+# Function to shut down the client -- can be called manually, or by signal interrupt
 def crash_handler(*args):
     global running
     print(f"(CLIENT) Client {my_name} received shutdown signal, shutting down...")
     running = False
 
 def listen_for_peers(listen_socket):
+    '''
+    Function which runs in its own thread and constantly listens for connections from peer clients.
+    When a connection request is received, this thread simply dispatches a new thread running handle_peer(),
+        which handles all of the connection-establishing protocols and all further communication.
+    '''
     while running:
         try:
             peer_socket, peer_address = listen_socket.accept()
@@ -44,69 +52,74 @@ def listen_for_peers(listen_socket):
     print(f"(CLIENT) Client {my_name} no longer accepting new connections...")
 
 def handle_peer(peer_socket, peer_address, establish):
-    # Two ways to enter this function:
-    #   1. We requested a peer's details from the server, and are connecting to them directly
-    #       In this case, 'establish' should be true: we establish the connection by send the first message
-    #   2. Our own listener socket accepted a connection
-    #       In this case, 'initiate' should be false: the peer will establish the connection by sending the first message
+    '''
+    Function which runs in its own thread and handles all communications with a single peer.
+    Threads with this function can be spawned in two ways, depending if we're the one initiating the connection or not:
+        1. We requested a peer's details from the server (in the main thread) (establish = True)
+        2. Our own listener socket accepted a connection (in the listener_thread) (establish = False) 
+    '''
+
+    # Initialize private key decryption object
+    rsa_dec_obj_my_priv = PKCS1_OAEP.new(my_rsa_priv)
+
+    # --- We are initiating the connection-establish protocol ---
     if establish: 
-        peer_socket.send(f"{my_name}".encode('utf-8'))
-        peer_name = peer_socket.recv(1024).decode('utf-8')
-        print(f"(CLIENT) Client {my_name} established connection with peer {peer_name}")
-        # sending our public key
-        print(f"Sending public key to {peer_name}")
-        peer_socket.send(_exp_my_rsa_pub)
-        if (peer_socket.recv(1024).decode('utf-8') != "OK"):
-            crash_handler()
+        # Send our name, then our public key. Wait for OKs
+        peer_socket.send(f"{my_name}".encode('utf-8'))              # 1
+        peer_name = peer_socket.recv(1024).decode('utf-8')          # 2
 
-        # receiving peer's public key
-        _peer_pub_key = peer_socket.recv(1024)
-        print(f"(CLIENT) Client {my_name} received:")
-        print(f"{peer_name} Public Key:",_peer_pub_key) 
-        peer_socket.send("OK".encode('utf-8'))
+        # Send our public key
+        # print(f"Sending public key to {peer_name}")
+        peer_socket.send(_exp_my_rsa_pub)                           # 3
 
+        # Wait for peer to send its public key
+        _peer_pub_key = peer_socket.recv(1024)                      # 4
+        # print(f"(CLIENT) Client {my_name} received {peer_name} public key: {_peer_pub_key}")
         peer_pub_key = RSA.importKey(_peer_pub_key)
 
-        # Generate a symmetric key to use for this client
-        peer_aes_key = os.urandom(16)
+        # Generate a symmetric key to use for this peer
+        symm_key = os.urandom(16)
 
-        # Encrypt the symmetric key using the client's public key
-        peer_pub_enc_obj = PKCS1_OAEP.new(peer_pub_key)
-        peer_aes_key_enc = peer_pub_enc_obj.encrypt(peer_aes_key)
-
-        print(f"Sending Symmetric key to {peer_name}")
-        peer_socket.send(peer_aes_key_enc)
-        if (peer_socket.recv(1024).decode('utf-8') != "OK"):
+        # Encrypt the symmetric key using the peer's public key and send it, wait for OK
+        peer_aes_key_enc = PKCS1_OAEP.new(peer_pub_key).encrypt(symm_key)
+        peer_socket.send(peer_aes_key_enc)                          # 5
+        if (peer_socket.recv(1024).decode('utf-8') != "OK"):        # 6
             crash_handler()
         
+    # --- The peer is initiating the connection-establish protocol ---
     else:
-        peer_name = peer_socket.recv(1024).decode('utf-8')
-        peer_socket.send(f"{my_name}".encode('utf-8'))
-        print(f"(CLIENT) Client {my_name} accepted connection from peer {peer_name}")
+        # Peer will send its name and public key; send OK after name
+        peer_name = peer_socket.recv(1024).decode('utf-8')          # 1
+        peer_socket.send(f"{my_name}".encode('utf-8'))              # 2
+        _peer_pub_key = peer_socket.recv(1024)                      # 3
+        # print(f"(CLIENT) Client {my_name} received {peer_name} public key: {_peer_pub_key}")
+        peer_pub_key = RSA.importKey(_peer_pub_key)
 
-        #Receiving peer's public key
-        _peer2_pub_key = peer_socket.recv(1024)
-        print(f"(CLIENT) Client {my_name} received:")
-        print(f"{peer_name} Public Key:",_peer2_pub_key) 
-        peer_socket.send("OK".encode('utf-8'))
-        peer2_pub_key = RSA.importKey(_peer2_pub_key)
-
-        # sending our public key
-        peer_socket.send(_exp_my_rsa_pub)
-        if (peer_socket.recv(1024).decode('utf-8') != "OK"):
-            crash_handler()
+        # Send our public key, wait for OK
+        peer_socket.send(_exp_my_rsa_pub)                           # 4
         
-        #receiving symmetric key
-        symm_key = peer_socket.recv(1024)
-        print(f"(CLIENT) Client {my_name} received:")
-        print(f"{peer_name} Symmetric Key:",symm_key) 
-        peer_socket.send("OK".encode('utf-8'))
+        # Peer will generate and send symmetric key, encrypted using my private key
+        # Receive, decrypt, and send OK
+        _symm_key_enc = peer_socket.recv(1024)                      # 5
+        symm_key = rsa_dec_obj_my_priv.decrypt(_symm_key_enc)
 
+        print(f"(CLIENT) Client {my_name} received and decrypted symmetric key")
+        peer_socket.send("OK".encode('utf-8'))                      # 6
+
+    # Create a Connection object for this peer
     try:
-        peer = Connection(peer_socket, peer_name, peer_address[0], peer_address[1])
-    except NameError: # Connection already exists -- return this thread immediately
+        peer = Connection(peer_socket, peer_name, peer_address[0], peer_address[1], peer_pub_key, symm_key)
+    except NameError as e: # Connection already exists -- return this thread immediately
+        print(f"(CLIENT) Client {my_name} failed to connect to peer {peer_name} -- already connected to a peer with this name")
+        print(e)
+        return
+    except Exception as e:
+        print(f"(CLIENT) Client {my_name} failed to connect to peer {peer_name} with error {e}")
         return
 
+    print("(CLIENT) Client {} {} connection from peer {}".format(my_name, "established" if establish else "accepted", peer_name))
+
+    # Begin message loop
     msg = peer.recv()
     while msg != '':
         print(f"(CLIENT) Client {my_name} received message {msg} from peer {peer.name}")
@@ -130,12 +143,12 @@ if __name__ == '__main__':
     signal.signal(signal.SIGINT, crash_handler)
     signal.signal(signal.SIGTERM, crash_handler)
 
-    # Generate an RSA key
+    # Generate an RSA key and a private-key-decryption-object (for use with the server; each peer will get its own decryption object)
     my_rsa_priv = RSA.generate(RSA_KEY_SIZE)
     my_rsa_pub = my_rsa_priv.public_key()
     _exp_my_rsa_pub = my_rsa_pub.exportKey()
-    print(f"(CLIENT) Client {my_name} generated RSA key")
-    print(f"(CLIENT) Client {my_name} public RSA key: {_exp_my_rsa_pub}")
+    my_rsa_priv_dec_obj = PKCS1_OAEP.new(my_rsa_priv)
+    # print(f"(CLIENT) Client {my_name} generated RSA key -- public: {_exp_my_rsa_pub}")
     
     # Create a listener socket and give it a thread to live in
     # This is the socket that other clients can connect to us from
@@ -152,13 +165,12 @@ if __name__ == '__main__':
     listener_thread.start()
     print(f"(CLIENT) Client {my_name} listening for peers on port {listen_port}")
 
-    # Create the socket and connect to the server
+    # --- Connect to the server ---
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.settimeout(3)
     server_socket.connect((server_ip, SERVER_PORT))
 
-    # Send the server our name, public key, and listen port,
-    #   & wait for echo response
+    # Send the server our name, public key, and listen port, waiting for OKs in between each
     server_socket.send(f"{my_name}".encode('utf-8'))
     if (server_socket.recv(1024).decode('utf-8') != "OK"):
         crash_handler()
@@ -167,17 +179,18 @@ if __name__ == '__main__':
         crash_handler()
     server_socket.send(_exp_my_rsa_pub)
 
-    print(f"(CLIENT) Client {my_name} received:")
-    print(server_socket.recv(1024))
+    # Server will send its public RSA key, then a symmetric key (encrypted using our private key)
+    server_rsa_pub = server_socket.recv(1024)
+    server_socket.send("OK".encode('utf-8'))
+    _server_aes_key_enc = server_socket.recv(1024)
+    server_aes_key = my_rsa_priv_dec_obj.decrypt(_server_aes_key_enc)
     server_socket.send("OK".encode('utf-8'))
 
-    print(f"(CLIENT) Client {my_name} received:")
-    print(server_socket.recv(1024))
-    server_socket.send("OK".encode('utf-8'))
-
-    server = Connection(server_socket, '__SERVER__', 0, 0)
+    # Create Connection object for the server
+    server = Connection(server_socket, '__SERVER__', 0, 0, server_rsa_pub, server_aes_key)
     print(f"(CLIENT) Client {my_name} registered to server")
 
+    # Initialize server communications (flows 2 and 3)
     t_last_flow2 = time.time()
     t_last_flow3 = t_last_flow2
     while running:
@@ -198,7 +211,7 @@ if __name__ == '__main__':
             # Make sure we are connected to every single client the server tells us exists
             for client_name in msg.split(','):
 
-                # If this is a client we haven't connected to yet, and it's not us, then request its details from the server
+                # If this is a client we haven't connected to yet, and it's not us, then request its address from the server
                 if ((client_name not in connections) and (client_name != my_name)):
                     running = server.send(f"GET_CLIENT_ADDR {client_name}")
                     caddr = server.recv()
@@ -232,4 +245,5 @@ if __name__ == '__main__':
 
     server.close()
     listener_thread.join()
-    print(f"(CLIENT) Client {my_name} closed")
+    # TODO join on peer threads
+    print(f"(CLIENT) !!! Client {my_name} closed successfully !!!")
