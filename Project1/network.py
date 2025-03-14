@@ -24,41 +24,50 @@ def handle_client(socket, addr):
         1. Establishing connection with a client (after socket has been created)
         2. Messaging with client
     '''
+    # Initialize private key crypter object
+    client_priv_crypter = PKCS1_OAEP.new(my_rsa_priv)
 
     # Client will send name, then listen port, then its public key
-    # Respond OK after receiving name and listen port
+    # Respond with our public key and wait for OK
     client_name = socket.recv(1024).decode('utf-8')
     socket.send("OK".encode('utf-8'))
     client_listen_port = socket.recv(1024).decode('utf-8')
     socket.send("OK".encode('utf-8'))
     _client_pub_key = socket.recv(1024).decode('utf-8')
     client_pub_key = RSA.importKey(_client_pub_key)
-
-    # print(f"client_name: {client_name}")
-    # print(f"client_listen_port: {client_listen_port}")
-    # print(f"_client_pub_key: {_client_pub_key}")
-
-    # Generate a symmetric key to use for this client
-    client_aes_key = os.urandom(16)
-
-    # Encrypt the symmetric key using the client's public key
-    client_pub_enc_obj = PKCS1_OAEP.new(client_pub_key)
-    client_aes_key_enc = client_pub_enc_obj.encrypt(client_aes_key)
-
-    # Send my public key + the encrypted symmetric key to the client
-    # Expect an OK after each
-    socket.send(_exp_my_rsa_pub)
+    socket.send(my_rsa_pub.exportKey())
     if (socket.recv(1024).decode('utf-8') != "OK"):
         crash_handler()
-    socket.send(client_aes_key_enc)
+
+    # Generate a symmetric key for use with this client
+    # Generate a crypter object for the client's public key and use it to encrypt the symmetric key
+    # Encrypt the symmetric key using the client's public key
+    client_sym_key = os.urandom(16)
+    client_pub_crypter = PKCS1_OAEP.new(client_pub_key)
+    _client_sym_key_enc = client_pub_crypter.encrypt(client_sym_key)
+
+    # Send the encrypted symmetric key to the client
+    # Receive back the client's nonce for their symmetric encrypter object, use it to create our decrypter object
+    socket.send(_client_sym_key_enc)
+    _client_nonce_enc = socket.recv(1024)
+    client_nonce = client_priv_crypter.decrypt(_client_nonce_enc)
+    client_sym_decrypter = AES.new(client_sym_key, AES.MODE_GCM, nonce = client_nonce)
+
+    # Generate our symmetric encrypter object
+    # Get its nonce and encrypt it using their public key
+    # Send the encrypted nonce
+    client_sym_encrypter = AES.new(client_sym_key, AES.MODE_GCM)
+    _my_nonce_enc = client_pub_crypter.encrypt(client_sym_encrypter.nonce)
+    socket.send(_my_nonce_enc)
     if (socket.recv(1024).decode('utf-8') != "OK"):
         crash_handler()
 
     # All set -- create a Connection object to store all the info on this client
     try:
-        client = Connection(socket, client_name, addr[0], client_listen_port, client_pub_key, client_aes_key)
-    except NameError:
+        client = Connection(socket, client_name, addr[0], client_listen_port, client_pub_key, client_pub_crypter, client_priv_crypter, client_sym_encrypter, client_sym_decrypter)
+    except NameError as e:
         print(f"(SERVER) Server received connection request from client {client_name}, but a client with that name already exists")
+        print(e)
         return
     print(f"(SERVER) Server established connection with client {client_name}")
 
@@ -103,7 +112,7 @@ def handle_client(socket, addr):
                     print(f"(SERVER) Error getting details for {arg}, requested by {client.name}: {e}")
                     response = 'ERROR'
 
-        client.send(response, enc = _enc)
+        client.send(response, encutf8 = _enc)
         print("(SERVER) Received msg \"{}\" from Client {}; responded '{}'".format(msg if len(msg) < 50 else f"{msg[:47]}...", client_name, response if len(response) < 50 else f"{response[:47]}..."))
         
         # Await next message (or empty message, if client closes connection)
@@ -123,7 +132,6 @@ if __name__ == '__main__':
     # Generate an RSA key
     my_rsa_priv = RSA.generate(RSA_KEY_SIZE)
     my_rsa_pub = my_rsa_priv.public_key()
-    _exp_my_rsa_pub = my_rsa_pub.exportKey()
     print(f"(SERVER) Server generated RSA key")
 
     # Create and initialize the listener socket
