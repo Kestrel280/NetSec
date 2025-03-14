@@ -245,5 +245,12 @@ if __name__ == '__main__':
 
     server.close()
     listener_thread.join()
-    # TODO join on peer threads
+
+    # Close connection to each peer
+    for peer in list(connections.values()):
+        peer.close()
+    print(f"(CLIENT) Client {my_name} sent close request to all peers...")
+    for t in peer_threads:
+        t.join()
+
     print(f"(CLIENT) !!! Client {my_name} closed successfully !!!")
