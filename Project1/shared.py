@@ -1,6 +1,7 @@
 import socket
 from Crypto.Hash import SHA3_512
 from Crypto.Cipher import PKCS1_OAEP, AES
+from threading import Semaphore
 
 SERVER_PORT = 10179
 RSA_KEY_SIZE = 2048
@@ -12,7 +13,7 @@ def sanitize_name(name):
     return name.strip().replace(',', '')
 
 class Connection:
-    def __init__(self, socket, name, ip, port, pub_key, pub_crypter, priv_crypter, sym_key):
+    def __init__(self, socket, name, ip, port, pub_key, pub_crypter, priv_crypter, sym_key, use_sendrecv_sync = False):
         # Sanitize name -- no beginning/ending whitespace, and no commas
         name = sanitize_name(name)
 
@@ -31,13 +32,19 @@ class Connection:
             self.priv_crypter = priv_crypter
             self.sym_key = sym_key
 
+            # If use_sendrecv_sync is True, use a Semamphore so that..
+            #   only one thread can communicate with the Connection at a time
+            #   (.send() will set a lock, .recv() will release the lock)
+            self.lock = Semaphore(value = 1)
+            self.use_sendrecv_sync = use_sendrecv_sync
+
             # Register this connection to the global connections object
             connections[name] = self
 
     # Encrypts a message and sends it
     #   Returns True if successfully sent
     #   Returns False if message could not be sent (recipient has closed connection)
-    def send(self, plaintext, encutf8 = True):
+    def send(self, plaintext, encutf8 = True, expect_response = True):
         # Generate the ciphertext and tag
         if (plaintext == ''): msg = ''
         else:
@@ -66,16 +73,24 @@ class Connection:
             msg.extend(nonce)
 
         try:
+            if self.use_sendrecv_sync:
+                self.lock.acquire()
+
+            # Send the encrypted message
             self.socket.send(msg)
+            
             return True
         except BrokenPipeError: # Recipient closed connection
             return False
 
     # (Blocking) Receives and decrypts an encrypted message
     #   If the message is empty, indicates that the recipient has closed the connection
-    def recv(self):
+    def recv(self, signal_lock = True):
+        plaintext = '' # If we error out before plaintext can be set, just shut down
         try:
             msg = self.socket.recv(1024)
+            if self.use_sendrecv_sync:
+                self.lock.release()
             if (msg == b''): return ''
 
             # print(f"msg received: {msg}")

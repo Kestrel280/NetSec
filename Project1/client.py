@@ -193,7 +193,7 @@ if __name__ == '__main__':
     server_socket.send("OK".encode('utf-8'))
 
     # Create Connection object for the server
-    server = Connection(server_socket, '__SERVER__', 0, 0, server_rsa_pub, server_pub_crypter, server_priv_crypter, server_sym_key)
+    server = Connection(server_socket, '__SERVER__', 0, 0, server_rsa_pub, server_pub_crypter, server_priv_crypter, server_sym_key, use_sendrecv_sync = True)
     print(f"(CLIENT) Client {my_name} registered to server")
 
     # Initialize server communications (flows 2 and 3)
