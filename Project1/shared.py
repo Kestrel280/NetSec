@@ -1,6 +1,7 @@
 import socket
 from Crypto.Hash import SHA3_512
 from Crypto.Cipher import PKCS1_OAEP, AES
+from Crypto.Signature import pkcs1_15
 from threading import Semaphore
 
 SERVER_PORT = 10179
@@ -13,7 +14,11 @@ def sanitize_name(name):
     return name.strip().replace(',', '')
 
 class Connection:
-    def __init__(self, socket, name, ip, port, pub_key, pub_crypter, priv_crypter, sym_key, use_sendrecv_sync = False):
+    # These will be set as class attributes when the user generates an RSA key
+    my_priv_key = 0
+    my_pub_key = 0
+
+    def __init__(self, socket, name, ip, port, connection_pub_key, sym_key, use_sendrecv_sync = False):
         # Sanitize name -- no beginning/ending whitespace, and no commas
         name = sanitize_name(name)
 
@@ -27,9 +32,7 @@ class Connection:
             self.name = name
             self.ip = ip
             self.port = port
-            self.pub_key = pub_key
-            self.pub_crypter = pub_crypter
-            self.priv_crypter = priv_crypter
+            self.connection_pub_key = connection_pub_key
             self.sym_key = sym_key
 
             # If use_sendrecv_sync is True, use a Semamphore so that..
@@ -52,7 +55,7 @@ class Connection:
             plaintext = plaintext.encode('utf-8') if encutf8 else plaintext
             encrypter = AES.new(self.sym_key, AES.MODE_GCM)
             ciphertext, tag = encrypter.encrypt_and_digest(plaintext)
-            auth = self.priv_crypter.encrypt(SHA3_512.new(plaintext).digest())
+            auth = pkcs1_15.new(self.my_priv_key).sign(SHA3_512.new(plaintext))
             nonce = encrypter.nonce
             header = "{},{},{},{}.".format(len(ciphertext), len(tag), len(auth), len(nonce)).encode('utf-8')
 
@@ -121,7 +124,8 @@ class Connection:
 
             decrypter = AES.new(self.sym_key, AES.MODE_GCM, nonce)
             plaintext = decrypter.decrypt_and_verify(ciphertext, tag).decode('utf-8')
-            # TODO decrypt auth, check against hash of msh
+
+            pkcs1_15.new(self.connection_pub_key).verify(SHA3_512.new(plaintext.encode('utf-8')), auth)
         
         # Sometimes when client closes connection, instead of recv just returning an empty message,
         #   it throws this exception. Solution... well, just return what recv SHOULD have returned (empty message)
@@ -131,9 +135,12 @@ class Connection:
         except Exception as e:
             print(f"Unhandled exception in recv: {e}")
             plaintext = ''
+        except (ValueError, TypeError):
+            print("Authentication failure! Closing connection")
+            plaintext = ''
         finally:
             return plaintext
-        
+
     # Closes the connection
     def close(self):
         try: 

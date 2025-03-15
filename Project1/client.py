@@ -59,9 +59,6 @@ def handle_peer(peer_socket, peer_address, peer_name, establish):
         2. Our own listener socket accepted a connection (in the listener_thread) (establish = False) 
     '''
 
-    # Initialize private key decryption object
-    peer_priv_crypter = PKCS1_OAEP.new(my_rsa_priv)
-
     # --- We are initiating the connection-establish protocol ---
     if establish: 
         # Get the peer's public key from the server (Getting it from the peer directly would enable an easier MITM attack)
@@ -73,13 +70,10 @@ def handle_peer(peer_socket, peer_address, peer_name, establish):
         if (peer_socket.recv(1024).decode('utf-8') != "OK"):                    # 2 Receive OK to generate sym key
             crash_handler()
 
-        # Generate a symetric key to use for this peer, and an encryption object to use it with
-        # Generate an RSA encrypter object using their public key
+        # Generate a symetric key to use for this peer
         # Encrypt the symetric key using the peer's public key and send it, wait for OK
         peer_sym_key = os.urandom(16)
-        peer_sym_encrypter = AES.new(peer_sym_key, AES.MODE_GCM)
-        peer_pub_crypter = PKCS1_OAEP.new(peer_pub_key)
-        peer_aes_key_enc = peer_pub_crypter.encrypt(peer_sym_key)
+        peer_aes_key_enc = PKCS1_OAEP.new(peer_pub_key).encrypt(peer_sym_key)
         peer_socket.send(peer_aes_key_enc)                                      # 3 Send encrypted sym key
 
         if (peer_socket.recv(1024).decode('utf-8') != "OK"):                    # 6 Receive OK
@@ -91,23 +85,21 @@ def handle_peer(peer_socket, peer_address, peer_name, establish):
         peer_name = peer_socket.recv(1024).decode('utf-8')                      # 1.1 Receive peer's name
 
         # Ask the server for the public key of this peer
-        # Generate an RSA encrypter object using their public key
         server.send(f"GET_PUBLIC_KEY {peer_name}")                              # 1.2 Ask server for peer's public key
         peer_pub_key = RSA.importKey(server.recv())                             # 1.3 Receive peer's public key
-        peer_pub_crypter = PKCS1_OAEP.new(peer_pub_key)
 
         # Send OK
         peer_socket.send("OK".encode('utf-8'))                                  # 2 Send OK to generate sym key
         
         # Peer will generate and send symetric key, encrypted using my private key. Receive and decrypt
-        peer_sym_key = peer_priv_crypter.decrypt(peer_socket.recv(1024))        # 3 Receive and decrypt sym key
+        peer_sym_key = PKCS1_OAEP.new(my_rsa_priv).decrypt(peer_socket.recv(1024)) # 3 Receive and decrypt sym key
 
-        # Receive their encrypted nonce, decrypt it, create our decrypter, and send OK
+        # Receive their encrypted nonce, decrypt it, and send OK
         peer_socket.send("OK".encode('utf-8'))                                  # 6 Send OK
 
     # Create a Connection object for this peer
     try:
-        peer = Connection(peer_socket, peer_name, peer_address[0], peer_address[1], peer_pub_key, peer_pub_crypter, peer_priv_crypter, peer_sym_key)
+        peer = Connection(peer_socket, peer_name, peer_address[0], peer_address[1], peer_pub_key, peer_sym_key)
     except NameError as e: # Connection already exists -- return this thread immediately
         print(f"(CLIENT) Client {my_name} failed to connect to peer {peer_name} -- already connected to a peer with this name")
         print(e)
@@ -142,10 +134,11 @@ if __name__ == '__main__':
     signal.signal(signal.SIGINT, crash_handler)
     signal.signal(signal.SIGTERM, crash_handler)
 
-    # Generate an RSA key and a private-key-decryption-object (for use with the server; each peer will get its own decryption object)
+    # Generate an RSA key and set it as class attribute of Connection class
     my_rsa_priv = RSA.generate(RSA_KEY_SIZE)
     my_rsa_pub = my_rsa_priv.public_key()
-    server_priv_crypter = PKCS1_OAEP.new(my_rsa_priv)
+    Connection.my_priv_key = my_rsa_priv
+    Connection.my_pub_key = my_rsa_pub
     # print(f"(CLIENT) Client {my_name} generated RSA key -- public: {my_rsa_pub.exportKey()}")
     
     # Create a listener socket and give it a thread to live in
@@ -177,23 +170,20 @@ if __name__ == '__main__':
         crash_handler()
     server_socket.send(my_rsa_pub.exportKey())
 
-    # Server will send its public RSA key. Generate a crypter object for it and send OK
+    # Server will send its public RSA key. Send OK
     _server_rsa_pub = server_socket.recv(1024)
     server_rsa_pub = RSA.importKey(_server_rsa_pub)
-    server_pub_crypter = PKCS1_OAEP.new(server_rsa_pub)
     server_socket.send("OK".encode('utf-8'))
 
     # Server will send symmetric key (encrypted using my public key)
     _server_sym_key_enc = server_socket.recv(1024)
-    server_sym_key = server_priv_crypter.decrypt(_server_sym_key_enc)
-    # print("CLIENT RECEIVED SYM KEY:")
-    # print(server_sym_key)
+    server_sym_key = PKCS1_OAEP.new(my_rsa_priv).decrypt(_server_sym_key_enc)
 
     # Send OK
     server_socket.send("OK".encode('utf-8'))
 
     # Create Connection object for the server
-    server = Connection(server_socket, '__SERVER__', 0, 0, server_rsa_pub, server_pub_crypter, server_priv_crypter, server_sym_key, use_sendrecv_sync = True)
+    server = Connection(server_socket, '__SERVER__', 0, 0, server_rsa_pub, server_sym_key, use_sendrecv_sync = True)
     print(f"(CLIENT) Client {my_name} registered to server")
 
     # Initialize server communications (flows 2 and 3)

@@ -24,9 +24,6 @@ def handle_client(socket, addr):
         1. Establishing connection with a client (after socket has been created)
         2. Messaging with client
     '''
-    # Initialize private key crypter object
-    client_priv_crypter = PKCS1_OAEP.new(my_rsa_priv)
-
     # Client will send name, then listen port, then its public key
     # Respond with our public key and wait for OK
     client_name = socket.recv(1024).decode('utf-8')
@@ -43,10 +40,7 @@ def handle_client(socket, addr):
     # Generate a crypter object for the client's public key and use it to encrypt the symmetric key
     # Encrypt the symmetric key using the client's public key
     client_sym_key = os.urandom(32)
-    # print("SERVER GENERATED SYM KEY:")
-    # print(client_sym_key)
-    client_pub_crypter = PKCS1_OAEP.new(client_pub_key)
-    _client_sym_key_enc = client_pub_crypter.encrypt(client_sym_key)
+    _client_sym_key_enc = PKCS1_OAEP.new(client_pub_key).encrypt(client_sym_key)
 
     # Send the encrypted symmetric key to the client, receive OK
     socket.send(_client_sym_key_enc)
@@ -56,7 +50,7 @@ def handle_client(socket, addr):
 
     # All set -- create a Connection object to store all the info on this client
     try:
-        client = Connection(socket, client_name, addr[0], client_listen_port, client_pub_key, client_pub_crypter, client_priv_crypter, client_sym_key)
+        client = Connection(socket, client_name, addr[0], client_listen_port, client_pub_key, client_sym_key)
     except NameError as e:
         print(f"(SERVER) Server received connection request from client {client_name}, but a client with that name already exists")
         print(e)
@@ -97,7 +91,7 @@ def handle_client(socket, addr):
                 try: 
                     arg = msg.split(' ')[1]
                     if arg in connections:
-                        response = connections[arg].pub_key.exportKey()
+                        response = connections[arg].connection_pub_key.exportKey()
                         _enc = False
                     else: raise KeyError(f"No details available for '{arg}'")
                 except Exception as e: 
@@ -121,9 +115,11 @@ if __name__ == '__main__':
     signal.signal(signal.SIGINT, crash_handler)
     signal.signal(signal.SIGTERM, crash_handler)
 
-    # Generate an RSA key
+    # Generate an RSA key and store it as a Connection class attribute
     my_rsa_priv = RSA.generate(RSA_KEY_SIZE)
     my_rsa_pub = my_rsa_priv.public_key()
+    Connection.my_priv_key = my_rsa_priv
+    Connection.my_pub_key = my_rsa_pub
     print(f"(SERVER) Server generated RSA key")
 
     # Create and initialize the listener socket
