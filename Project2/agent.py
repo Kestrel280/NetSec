@@ -1,12 +1,18 @@
 import argparse
+import os
 import socket
 import threading
+from Crypto.Hash import SHA3_512
+from Crypto.Cipher import AES
 
 # Defined constants
-LISTEN_PORT = 10179
+LISTEN_PORT = 10176
+NONCE_SIZE_BYTES = 16
+NBUF_SIZE = 1024
 
 # Global variables
-sjt = None      # Secret join token
+# sjt = None      # Secret join token
+sjt = "abc123"
 
 # Arguments
 parser = argparse.ArgumentParser()
@@ -18,6 +24,14 @@ parser.add_argument("--deploy-service", nargs=1, help="Deploy a service to a clu
 parser.add_argument("--path", nargs=1, help="Path to service to deploy with --deploy_service", type=str, required=False, metavar="{Path to Python file}")
 
 ###
+### MISC Helper functions
+###
+
+def sha3(m, enc=True):
+    # Calculates SHA3-512 of m and returns hex digest
+    return SHA3_512.new(m.encode('utf-8') if enc else m).hexdigest()
+
+###
 ### MANAGER Helper functions
 ###
 
@@ -27,8 +41,34 @@ def handle_new_connection(sock, addr):
     Communicates with a newly connected entity to determine what they want.
     Dispatches to appropriate handler.
     """
-
     print(f"in handle_new_connection with sock={sock}, addr={addr}")
+
+    imsg = sock.recv(NBUF_SIZE).decode('utf-8')
+
+    print(f"mgr received imsg = '{imsg}'")
+
+    cmd = imsg.split(' ')[0]
+    try:
+        match cmd:
+            case 'register':
+                # Worker-Manager Connection Protocol, step 1 validation
+                Na, sig = imsg.split(' ')[1:3]
+                tsig = sha3(f"{cmd} {Na}{sjt}")
+                assert tsig == sig
+                # Step 2
+                Nm = os.urandom(NONCE_SIZE_BYTES).hex()
+            case 'list_agents':
+                # TODO do Cluster Services Connection Protocol
+                # TODO return list of workers
+                pass
+            case 'deploy_services':
+                # TODO do Cluster Services Connection Protocol
+                # TODO deploy service
+                pass
+    except AssertionError:
+        print("worker provided invalid signature, terminating their connection request")
+        sock.send("invalid_signature".encode('utf-8'))
+        sock.close()
 
     return
 
@@ -131,6 +171,15 @@ def connect_to_manager(mip):
 
     print(f"worker connected to manager at ip {mip}")
 
+    # Worker-Manager Connection Protocol (worker's side)
+    Na = os.urandom(NONCE_SIZE_BYTES).hex()
+    omsg = f"register {Na}"
+    print(f"worker calculating sha3 of '{omsg}{sjt}'")
+    sig = sha3(f"{omsg}{sjt}")
+    print(f"omsg: {omsg}")
+    print(f"sig: {sig}")
+    sock.send(f"{omsg} {sig}".encode('utf-8'))
+
     return
 
 def deploy_service(mip, service_path):
@@ -185,7 +234,7 @@ if __name__ == '__main__':
     if args.bootstrap:
         become_manager()
     elif ((args.join is not None) and (args.token is not None)):
-        sjt = args.token[0]
+        # sjt = args.token[0] TODO uncomment when we're actually setting an sjt
         connect_to_manager(args.join[0])
     elif ((args.deploy_service is not None) and (args.path is not None)):
         deploy_service(args.deploy_service[0], args.path[0])
