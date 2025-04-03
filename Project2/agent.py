@@ -2,8 +2,9 @@ import argparse
 import os
 import socket
 import threading
-from Crypto.Hash import SHA3_512
 from Crypto.Cipher import AES
+
+from utils import * # sha3(), gcd(), fme(), mmi(), is_prime()
 
 # Defined constants
 LISTEN_PORT = 10176
@@ -27,9 +28,7 @@ parser.add_argument("--path", nargs=1, help="Path to service to deploy with --de
 ### MISC Helper functions
 ###
 
-def sha3(m, enc=True):
-    # Calculates SHA3-512 of m and returns hex digest
-    return SHA3_512.new(m.encode('utf-8') if enc else m).hexdigest()
+#
 
 ###
 ### MANAGER Helper functions
@@ -55,8 +54,7 @@ def handle_new_connection(sock, addr):
                 Na, sig = imsg.split(' ')[1:3]
                 tsig = sha3(f"{cmd} {Na}{sjt}")
                 assert tsig == sig
-                # Step 2
-                Nm = os.urandom(NONCE_SIZE_BYTES).hex()
+                # Step  = os.urandom(NONCE_SIZE_BYTES).hex()
             case 'list_agents':
                 # TODO do Cluster Services Connection Protocol
                 # TODO return list of workers
