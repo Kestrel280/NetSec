@@ -21,35 +21,36 @@ parser.add_argument("--path", nargs=1, help="Path to service to deploy with --de
 ### MANAGER Helper functions
 ###
 
-def handle_new_connection(socket, addr):
+def handle_new_connection(sock, addr):
     """
     (Thread function)
     Communicates with a newly connected entity to determine what they want.
     Dispatches to appropriate handler.
     """
 
-    print(f"in handle_new_connection with socket={socket}, addr={addr}")
+    print(f"in handle_new_connection with sock={sock}, addr={addr}")
+
     return
 
-def listen(listen_socket):
+def listen(listen_sock):
     """
     (Thread function)
     Endless loop of listening for connections and spawning a handle_connection() thread.
     Should be dispatched by start_connection_listener().
     """
 
-    print(f"in listen() with listen_socket={listen_socket}")
+    print(f"in listen() with listen_sock={listen_sock}")
 
     while True:
         try:
-            socket, addr = listen_socket.accept()
-            socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            thread = threading.Thread(target = handle_new_conection, args = (socket, addr))
+            sock, addr = listen_sock.accept()
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            thread = threading.Thread(target = handle_new_connection, args = (sock, addr))
             thread.start()
         except TimeoutError:
             pass
 
-    listen_socket.close()
+    listen_sock.close()
     print("listen() closing listen socket")
 
     return
@@ -63,12 +64,13 @@ def start_connection_listener():
 
     print(f"in start_connection_listener()")
 
-    listen_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    listen_socket.settimeout(3)
-    listen_socket.bind(("0.0.0.0", LISTEN_PORT))
-    listen_socket.listen(10)
-    listener_thread = threading.Thread(target = listen, args = (listen_socket,))
+    listen_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listen_sock.settimeout(3)
+    listen_sock.bind(("0.0.0.0", LISTEN_PORT))
+    listen_sock.listen(10)
+    listener_thread = threading.Thread(target = listen, args = (listen_sock,))
     listener_thread.start()
+
     return listener_thread
 
 ###
@@ -123,6 +125,14 @@ def connect_to_manager(mip):
 
     print(f"in connect_to_manager() with mip={mip}")
 
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)    
+    sock.settimeout(3)
+    sock.connect((mip, LISTEN_PORT))
+
+    print(f"worker connected to manager at ip {mip}")
+
+    return
+
 def deploy_service(mip, service_path):
     """
     Deploys a service to a cluster.
@@ -145,6 +155,8 @@ def deploy_service(mip, service_path):
 
     print(f"in deploy_service() with mip={mip}, service_path={service_path}")
 
+    return
+
 def list_agents(mip):
     """
     Lists all worker agents on a cluster.
@@ -164,6 +176,8 @@ def list_agents(mip):
 
     print(f"in list_agents with mip={mip}")
 
+    return
+
 if __name__ == '__main__':
     # Interpret arguments and dispatch to appropriate handler
     args = parser.parse_args()
@@ -171,12 +185,12 @@ if __name__ == '__main__':
     if args.bootstrap:
         become_manager()
     elif ((args.join is not None) and (args.token is not None)):
-        sjt = args.token
-        connect_to_manager(args.join)
+        sjt = args.token[0]
+        connect_to_manager(args.join[0])
     elif ((args.deploy_service is not None) and (args.path is not None)):
-        deploy_service(args.deploy_service, args.path)
+        deploy_service(args.deploy_service[0], args.path[0])
     elif (args.list_agents is not None):
-        list_agents(args.list_agents)
+        list_agents(args.list_agents[0])
     else:
         raise ValueError("Invalid arguments! Use 'python3 agent.py -h' to for help")
 
