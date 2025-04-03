@@ -7,6 +7,32 @@ def sha3(m, enc=True):
     # Calculates SHA3-512 of m and returns hex digest
     return SHA3_512.new(m.encode('utf-8') if enc else m).hexdigest()
 
+def generate_prime(lo, hi):
+    """ Generates a prime number in the range [lo, hi] """
+
+    low_primes = (2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67,
+                  71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131, 137, 139, 149,
+                  151, 157, 163, 167, 173, 179, 181, 191, 193, 197, 199, 211, 223, 227, 229,
+                  233, 239, 241, 251, 257, 263, 269, 271, 277, 281, 283, 293, 307, 311, 313,
+                  317, 331, 337, 347, 349, 353, 359, 367, 373, 379, 383, 389, 397, 401, 409,
+                  419, 421, 431, 433, 439, 443, 449, 457, 461, 463, 467, 479, 487, 491, 499)
+
+    x = random.randint(lo, hi)
+    while True:
+
+        # Check against low primes first
+        low_prime_test_passed = True
+        for p in low_primes:
+            if ((x % p == 0) and (p**2 <= x)): 
+                low_prime_test_passed = False
+                break 
+
+        # Not divisible by low primes, try Fermat test now
+        if low_prime_test_passed:
+            if is_prime(x): 
+                return x
+        x += 1
+
 def gcd(a, b):
     """
     Euclid Algorithm for GCD.
@@ -82,8 +108,9 @@ def is_prime(n):
     if n < 1000:  # For small numbers, use brute-force test
         if any(map(lambda d: n % d == 0, list(range(2, math.isqrt(n) + 1)))) > 0:  # If n % d == 0 for any d in (2..sqrt(n)), the number is not prime
             return False
+        return True
 
-    k = 2  # Number of tests to run
+    k = 10  # Number of tests to run
     if k > n - 2:
         k = n - 2
 
@@ -155,3 +182,11 @@ if __name__ == '__main__':
         print("\n   Passed {} tests".format(len(test_cases)))
         globals().__delitem__(test)  # Namespace cleanup
         del i, r, expected, args, test_case, test_cases, test  # Namespace cleanup
+
+    print("Performing tests for generate_prime() with 2048-bit numbers, may take a moment...")
+    PRIME_TESTS, LO, HI = (3, 2**2048, 2**2049 - 1)
+    for i in range(PRIME_TESTS):
+        print("\r   Performing test {}/{}...".format(i+1, PRIME_TESTS), end='')
+        assert (is_prime(x := generate_prime(LO, HI))), f"generate_prime() created nonprime {x}"
+    print("\n   Passed {} tests".format(PRIME_TESTS))
+    del PRIME_TESTS, LO, HI, x, i
