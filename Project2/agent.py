@@ -3,23 +3,23 @@ import numpy as np
 import os
 import socket
 import threading
-from Crypto.Cipher import AES
 
 from utils import * # sha3(), gcd(), fme(), mmi(), is_prime()
 
 # Defined constants
 LISTEN_PORT = 10176
 NONCE_SIZE_BYTES = 16
-NBUF_SIZE = 4096        # Buffer size in bytes for socket.recv() calls; DH sends 4096-bit numbers using base16 repr = 1024 chars, so should be at least 2x that
 
 #RFC 3526: 4096-bit mod-p group
 DH_G = 2
 DH_P = int("FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7EDEE386BFB5A899FA5AE9F24117C4B1FE649286651ECE45B3DC2007CB8A163BF0598DA48361C55D39A69163FA8FD24CF5F83655D23DCA3AD961C62F356208552BB9ED529077096966D670C354E4ABC9804F1746C08CA18217C32905E462E36CE3BE39E772C180E86039B2783A2EC07A28FB5C55DF06F4C52C9DE2BCBF6955817183995497CEA956AE515D2261898FA051015728E5A8AAAC42DAD33170D04507A33A85521ABDF1CBA64ECFB850458DBEF0A8AEA71575D060C7DB3970F85A6E1E4C7ABF5AE8CDB0933D71E8C94E04A25619DCEE3D2261AD2EE6BF12FFA06D98A0864D87602733EC86A64521F2B18177B200CBBE117577A615D6C770988C0BAD946E208E24FA074E5AB3143DB5BFCE0FD108E4B82D120A92108011A723C12A787E6D788719A10BDBA5B2699C327186AF4E23C1A946834B6150BDA2583E9CA2AD44CE8DBBBC2DB04DE8EF92E8EFC141FBECAA6287C59474E6BC05D99B2964FA090C3A2233BA186515BE7ED1F612970CEE2D7AFB81BDD762170481CD0069127D5B05AA993B4EA988D8FDDC186FFB7DC90A6C08F4DF435C934063199FFFFFFFFFFFFFFFF", 16)
 
 # Global variables
-# sjt = None      # Secret join token
+# sjt = None              # Secret join token
 sjt = "abc123"
-wid = 1         # id to assign to next connected worker
+wid = 1                 # id to assign to next connected worker
+used_nonces = set()     # Set of used nonces
+network_nodes = []      # List of Nodes on the cluster, connected or not
 
 # Arguments
 parser = argparse.ArgumentParser()
@@ -34,6 +34,12 @@ parser.add_argument("--path", nargs=1, help="Path to service to deploy with --de
 ### MISC Helper functions
 ###
 
+def register_nonce(n):
+    if n in used_nonces:
+        raise KeyError("tried to register a used nonce")
+    else:
+        used_nonces.add(n)
+        # TODO send NONCE_USED message to all connected nodes, if manager
 #
 
 ###
@@ -58,20 +64,22 @@ def handle_new_connection(sock, addr):
                 # --- Worker-Manager Connection Protocol --- 
                 # Worker has sent step 1: check it's a unique nonce, and that they signed using the SJT
                 Na, isig = imsg.split(' ')[1:3]
-                # TODO add this nonce to used nonce list
-                # TODO check if this nonce has already been used
+                register_nonce(Na)
                 tsig = sha3(f"{cmd} {Na}{sjt}")
                 assert tsig == isig
 
                 # Step 2: Generate a nonce and DH parameter, and send to worker
                 Nm = os.urandom(NONCE_SIZE_BYTES).hex()
-                # TODO add this nonce to used nonce list
+                print(f"M: generated nonce Nm = {Nm}")
+                register_nonce(Nm)
                 x = random.randint(2**1024, 2**4095) # Generate my Diffie-Hellman parameter
                 gxmodp = fme(DH_G, x, DH_P)
 
-                omsg = f"{wid} {Nm} {gxmodp:x}" # [id, Nm (hex), g^x mod p (hex)]
+                omsg = f"{++wid} {Nm} {gxmodp:x}" # [id, Nm (hex), g^x mod p (hex)]
                 osig = sha3(f"{omsg}{sjt}")
                 sock.send(f"{omsg} {osig}".encode('utf-8'))
+
+                node = Node(wid, addr) # TODO just store ip, not full addr object
 
                 # Step 3: Worker sends their DH half
                 imsg = sock.recv(NBUF_SIZE).decode('utf-8')
@@ -82,8 +90,17 @@ def handle_new_connection(sock, addr):
 
                 # Step 4: Generate key, send NONCE_USED and WORKER_CONNECTED msgs for all connected workers
                 Kp = fme(int(gymodp, 16), x, DH_P)
-                K = sha3(f"{Kp} {Na} {Nm}")
+                K = sha3(f"{Kp} {Na} {Nm}")[:32].encode('utf-8')
                 print(f"M: established secret key K = {K}")
+
+                node.connect(sock, K, threading.get_ident())
+                node.secure_send("testing secure message -- hello")
+                print(f"M: received secure message '{node.secure_recv()}'")
+                print("M: done")
+    
+                # TODO send NONCE_USED/WORKER_CONNECTED msgs
+                # TODO send WORKER_CONNECTED msg to all connected nodes
+                # TODO add worker to network_nodes
 
             case 'list_agents':
                 # TODO do Cluster Services Connection Protocol
@@ -95,6 +112,9 @@ def handle_new_connection(sock, addr):
                 pass
     except AssertionError:
         print("worker provided invalid signature, terminating their connection request")
+        sock.close()
+    except KeyError:
+        print("tried to register a used nonce, terminating connection request")
         sock.close()
 
     return
@@ -201,7 +221,8 @@ def connect_to_manager(mip):
     try:
         # Step 1: generate a nonce and send a connection request to manager, signed using SJT
         Na = os.urandom(NONCE_SIZE_BYTES).hex()
-        # TODO add this nonce to used nonce list
+        print(f"W: generated nonce Na = {Na}")
+        register_nonce(Na)
         omsg = f"register {Na}"
         osig = sha3(f"{omsg}{sjt}")
         sock.send(f"{omsg} {osig}".encode('utf-8'))
@@ -210,7 +231,7 @@ def connect_to_manager(mip):
         imsg = sock.recv(NBUF_SIZE).decode('utf-8')
         # print(f"W: received imsg = '{imsg}'")
         wid, Nm, gxmodp, isig = imsg.split(' ')
-        # TODO add this nonce to used nonce list
+        register_nonce(Nm)
         tsig = sha3(f"{wid} {Nm} {gxmodp}{sjt}")
         assert tsig == isig
 
@@ -223,8 +244,16 @@ def connect_to_manager(mip):
 
         # Step 4: Generate key, send status
         Kp = fme(int(gxmodp, 16), y, DH_P)
-        K = sha3(f"{Kp} {Na} {Nm}")
+        K = sha3(f"{Kp} {Na} {Nm}")[:32].encode('utf-8')
         print(f"W: established secret key K = {K}")
+
+        mgr = Node(0, mip)
+        mgr.connect(sock, K, threading.get_ident())
+
+        print(f"W: received secure message '{mgr.secure_recv()}'")
+        mgr.secure_send("testing secure message -- hi there")
+        print("W: done")
+        # TODO enter message loop
 
     except AssertionError:
         print("W: manager provided invalid signature, terminating connection request")

@@ -1,7 +1,48 @@
 import math
 import numpy as np
 import random
+from Crypto.Cipher import AES
 from Crypto.Hash import SHA3_512
+
+NBUF_SIZE = 4096        # Buffer size in bytes for socket.recv() calls; DH sends 4096-bit numbers using base16 repr = 1024 chars, so should be at least 2x that
+
+class Node:
+    def __init__(self, nid, ip):
+        self.nid = nid
+        self.ip = ip
+        self.connected = False
+        self.busy = False
+    def connect(self, sock, key, thread):
+        self.sock = sock
+        self.key = key
+        self.thread = thread
+        self.connected = True
+    def secure_send(self, plaintext): # TODO add try/except
+        assert self.connected, "cannot send to a non-connected node"
+        enc = AES.new(self.key, AES.MODE_GCM)
+        ciphertext, tag = enc.encrypt_and_digest(plaintext.encode('utf-8'))
+        nonce = enc.nonce
+        header = "{},{},{}.".format(len(ciphertext), len(tag), len(nonce)).encode('utf-8')
+        omsg = bytearray()
+        omsg = omsg + header + ciphertext + tag + nonce
+        self.sock.send(omsg)
+        return True
+    def secure_recv(self): # TODO add try/except
+        assert self.connected, "cannot receive from a non-connected node"
+        imsg = self.sock.recv(NBUF_SIZE)
+        header = imsg.split(b'.')[0].decode('utf-8')
+        payload = b'.'.join(imsg.split(b'.')[1:])
+
+        ciphertext_len  = int(header.split(',')[0])
+        tag_len         = int(header.split(',')[1])
+        nonce_len       = int(header.split(',')[2])
+        ciphertext = payload[:ciphertext_len]
+        tag             = payload[ciphertext_len : ciphertext_len + tag_len]
+        nonce           = payload[ciphertext_len + tag_len :]
+
+        dec = AES.new(self.key, AES.MODE_GCM, nonce)
+        plaintext = dec.decrypt_and_verify(ciphertext, tag).decode('utf-8')
+        return plaintext
 
 def sha3(m, enc=True):
     # Calculates SHA3-512 of m and returns hex digest
