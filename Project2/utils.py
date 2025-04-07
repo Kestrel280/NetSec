@@ -1,6 +1,7 @@
 import math
 import numpy as np
 import random
+import time
 from Crypto.Cipher import AES
 from Crypto.Hash import SHA3_512
 
@@ -10,14 +11,16 @@ class Node:
     def __init__(self, nid, ip):
         self.nid = nid
         self.ip = ip
+        self.time_last_heartbeat = 0
         self.connected = False
         self.busy = False
     def connect(self, sock, key, thread):
         self.sock = sock
         self.key = key
         self.thread = thread
+        self.time_last_heartbeat = time.time()
         self.connected = True
-    def secure_send(self, plaintext): # TODO add try/except
+    def secure_send(self, plaintext): # TODO add try/except # TODO add heartbeat time check
         assert self.connected, "cannot send to a non-connected node"
         enc = AES.new(self.key, AES.MODE_GCM)
         ciphertext, tag = enc.encrypt_and_digest(plaintext.encode('utf-8'))
@@ -29,7 +32,13 @@ class Node:
         return True
     def secure_recv(self): # TODO add try/except
         assert self.connected, "cannot receive from a non-connected node"
-        imsg = self.sock.recv(NBUF_SIZE)
+
+        try:
+            imsg = self.sock.recv(NBUF_SIZE)
+        except TimeoutError:
+            return ''
+        if (imsg == b''): return ''
+
         header = imsg.split(b'.')[0].decode('utf-8')
         payload = b'.'.join(imsg.split(b'.')[1:])
 
