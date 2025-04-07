@@ -1,4 +1,5 @@
 import argparse
+import numpy as np
 import os
 import socket
 import threading
@@ -71,6 +72,18 @@ def handle_new_connection(sock, addr):
                 omsg = f"{wid} {Nm} {gxmodp:x}" # [id, Nm (hex), g^x mod p (hex)]
                 osig = sha3(f"{omsg}{sjt}")
                 sock.send(f"{omsg} {osig}".encode('utf-8'))
+
+                # Step 3: Worker sends their DH half
+                imsg = sock.recv(NBUF_SIZE).decode('utf-8')
+                # print(f"M: received imsg = '{imsg}'")
+                gymodp, isig = imsg.split(' ')
+                tsig = sha3(f"{gymodp}{sjt}")
+                assert tsig == isig
+
+                # Step 4: Generate key, send NONCE_USED and WORKER_CONNECTED msgs for all connected workers
+                Kp = fme(int(gymodp, 16), x, DH_P)
+                K = sha3(f"{Kp} {Na} {Nm}")
+                print(f"M: established secret key K = {K}")
 
             case 'list_agents':
                 # TODO do Cluster Services Connection Protocol
@@ -195,11 +208,24 @@ def connect_to_manager(mip):
 
         # Manager sends back step 2
         imsg = sock.recv(NBUF_SIZE).decode('utf-8')
-        print(f"W: received imsg = '{imsg}'")
+        # print(f"W: received imsg = '{imsg}'")
         wid, Nm, gxmodp, isig = imsg.split(' ')
         # TODO add this nonce to used nonce list
         tsig = sha3(f"{wid} {Nm} {gxmodp}{sjt}")
         assert tsig == isig
+
+        # Step 3: send mgr my DH half
+        y = random.randint(2**1024, 2**4095) # Generate my Diffie-Hellman parameter
+        gymodp = fme(DH_G, y, DH_P)
+        omsg = f"{gymodp:x}"
+        osig = sha3(f"{omsg}{sjt}")
+        sock.send(f"{omsg} {osig}".encode('utf-8'))
+
+        # Step 4: Generate key, send status
+        Kp = fme(int(gxmodp, 16), y, DH_P)
+        K = sha3(f"{Kp} {Na} {Nm}")
+        print(f"W: established secret key K = {K}")
+
     except AssertionError:
         print("W: manager provided invalid signature, terminating connection request")
         sock.close()
