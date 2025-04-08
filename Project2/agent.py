@@ -41,23 +41,26 @@ parser.add_argument("--path", nargs=1, help="Path to service to deploy with --de
 ### MISC Helper functions
 ###
 
+def broadcast_msg(msg):
+    for node in network_nodes:
+        try:
+            node.secure_send(msg)
+        except Exception: pass
+
 def register_nonce(n):
     if n in used_nonces:
         raise KeyError("tried to register a used nonce")
     else:
         used_nonces.add(n)
-        # TODO send NONCE_USED message to all connected nodes, if manager
 def register_node(n):
     if n in network_nodes:
         raise KeyError("tried to register a node whose id is already taken")
     else:
         network_nodes[n.nid] = n
-        # TODO send WORKER_CONNECTED message to all connected nodes, if manager
 
 def deregister_node(nid):
     if nid in network_nodes:
         del network_nodes[nid]
-        # TODO send WORKER_DISCONNECTED message to all connected nodes, if manager
 
 def heartbeat_loop(node):
     # thread function
@@ -81,12 +84,14 @@ def handle_worker(sock, addr, init_msg):
 
     # Worker has sent step 1: check it's a unique nonce, and that they signed using the SJT
     cmd, Na, isig = init_msg.split(' ')
+    broadcast_msg(f"nonce_used {Na}")
     register_nonce(Na)
     tsig = sha3(f"{cmd} {Na}{sjt}")
     assert tsig == isig
 
     # Step 2: Generate a nonce and DH parameter, and send to worker
     Nm = os.urandom(NONCE_SIZE_BYTES).hex()
+    broadcast_msg(f"nonce_used {Nm}")
     if PRINT_DEBUG: print(f"{fmt_mgr} generated nonce Nm = {Nm:10}... for wid {twid:5}")
     register_nonce(Nm)
     x = random.randint(2**1024, 2**4095) # Generate my Diffie-Hellman parameter
@@ -96,7 +101,8 @@ def handle_worker(sock, addr, init_msg):
     osig = sha3(f"{omsg}{sjt}")
     sock.send(f"{omsg} {osig}".encode('utf-8'))
 
-    node = Node(twid, addr[0]) # TODO just store ip, not full addr object
+    node = Node(twid, addr[0])
+    broadcast_msg(f"worker_connected {twid} {addr[0]}")
     register_node(node)
 
     # Step 3: Worker sends their DH half
@@ -117,7 +123,6 @@ def handle_worker(sock, addr, init_msg):
         node.secure_send(f"nonce_used {_nonce}")
     for _node in network_nodes.values():
         node.secure_send(f"worker_connected {_node.nid} {_node.ip}")
-    # TODO send WORKER_CONNECTED msg to all connected nodes
 
     # Start sending heartbeats
     hbthread = threading.Thread(target = heartbeat_loop, args = (node,))
@@ -128,13 +133,14 @@ def handle_worker(sock, addr, init_msg):
     while imsg != '':
         if PRINT_MSGS: print(f"{fmt_mgr} received msg '{imsg}'")
         tokens = imsg.split(' ')
-        cmd = tokens.pop(0)
-        match cmd:
-            case 'heartbeat':
-                node.time_last_heartbeat = time.time()
-            case 'job_finished': 
-                node.busy = False
-            # TODO case for shutdown
+        while tokens:
+            cmd = tokens.pop(0)
+            match cmd:
+                case 'heartbeat':
+                    node.time_last_heartbeat = time.time()
+                case 'job_finished': 
+                    node.busy = False
+                # TODO case for shutdown
         imsg = node.secure_recv()
     if PRINT_DEBUG: print(f"{fmt_mgr} exited worker {node.nid:5} message loop")
 
@@ -296,28 +302,30 @@ def connect_to_manager(mip):
         while imsg != '':
             if PRINT_MSGS: print(f"w {twid:5} received msg '{imsg}'")
             tokens = imsg.split(' ')
-            cmd = tokens.pop(0)
-            match cmd:
-                case 'heartbeat':
-                    mgr.time_last_heartbeat = time.time()
-                case 'worker_connected':
-                    _wid = tokens.pop(0)
-                    _ip = tokens.pop(0)
-                    new_node = Node(_wid, _ip)
-                    register_node(new_node)
-                    if PRINT_REGISTRATION: print(f"w {twid:5} got instruction to register new node {_wid} @ {_ip}")
-                    print(network_nodes)
-                case 'worker_disconnected':
-                    _node_id = tokens.pop(0)
-                    deregister_node(_node_id)
-                    if PRINT_REGISTRATION: print(f"w {twid:5} got instruction to deregister node {_wid}")
-                    print(network_nodes)
-                case 'nonce_used':
-                    _nonce = tokens.pop(0)
-                    register_nonce(_nonce)
-                    if PRINT_REGISTRATION: print(f"w {twid:5} got instruction to register nonce node {_nonce}")
-                    print(used_nonces)
-                # TODO case for shutdown
+            while tokens:
+                cmd = tokens.pop(0)
+                match cmd:
+                    case 'heartbeat':
+                        mgr.time_last_heartbeat = time.time()
+                    case 'worker_connected':
+                        _wid = tokens.pop(0)
+                        _ip = tokens.pop(0)
+                        new_node = Node(_wid, _ip)
+                        if ((_wid != twid) and (_wid not in network_nodes)): register_node(new_node)
+                        if PRINT_REGISTRATION: print(f"w {twid:5} got instruction to register new node {_wid} @ {_ip}")
+                        print(network_nodes)
+                    case 'worker_disconnected':
+                        _node_id = tokens.pop(0)
+                        deregister_node(_node_id)
+                        if PRINT_REGISTRATION: print(f"w {twid:5} got instruction to deregister node {_wid}")
+                        print(network_nodes)
+                    case 'nonce_used':
+                        _nonce = tokens.pop(0)
+                        register_nonce(_nonce)
+                        if PRINT_REGISTRATION: print(f"w {twid:5} got instruction to register nonce node {_nonce}")
+                        print(used_nonces)
+                    # TODO case for shutdown
+
             imsg = mgr.secure_recv()
 
     except AssertionError:
