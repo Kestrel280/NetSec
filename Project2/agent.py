@@ -125,7 +125,9 @@ def handle_worker(sock, addr, init_msg):
     # --- Message Loop ---
     imsg = node.secure_recv()
     while imsg != '':
-        match imsg:
+        tokens = imsg.split(' ')
+        cmd = tokens.pop(0)
+        match cmd:
             case 'heartbeat':
                 print(f"M received hb from {node.nid}")
                 node.time_last_heartbeat = time.time()
@@ -312,18 +314,21 @@ def connect_to_manager(mip):
         # --- Message Loop ---
         imsg = mgr.secure_recv()
         while imsg != '':
-            cmd = imsg.split(' ')[0]
+            tokens = imsg.split(' ')
+            cmd = tokens.pop(0)
             match cmd:
                 case 'heartbeat':
                     print(f"W received hb from mgr")
                     mgr.time_last_heartbeat = time.time()
                 case 'worker_connected':
-                    new_node = Node(*(imsg.split(' ')[1:3]))
+                    _wid = tokens.pop(0)
+                    _ip = tokens.pop(0)
+                    new_node = Node(_wid, _ip)
                     register_node(new_node)
                 case 'worker_disconnected':
-                    deregister_node(imsg.split(' ')[1])
+                    deregister_node(tokens.pop(0))
                 case 'nonce_used':
-                    register_nonce(imsg.split(' ')[1])
+                    register_nonce(tokens.pop(0))
                 # TODO case for shutdown
             imsg = mgr.secure_recv()
 
