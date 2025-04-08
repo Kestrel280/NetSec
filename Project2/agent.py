@@ -8,9 +8,10 @@ import time
 from utils import * # sha3(), gcd(), fme(), mmi(), is_prime()
 
 # Defined constants
-PRINT_DEBUG = True
-PRINT_MSGS  = False
-LISTEN_PORT = 10175
+PRINT_DEBUG         = True
+PRINT_MSGS          = True
+PRINT_REGISTRATION  = True
+LISTEN_PORT = 10171
 NONCE_SIZE_BYTES = 16
 HEARTBEAT_INTERVAL = 5
 fmt_mgr = "mgr    "
@@ -95,7 +96,7 @@ def handle_worker(sock, addr, init_msg):
     osig = sha3(f"{omsg}{sjt}")
     sock.send(f"{omsg} {osig}".encode('utf-8'))
 
-    node = Node(twid, addr) # TODO just store ip, not full addr object
+    node = Node(twid, addr[0]) # TODO just store ip, not full addr object
     register_node(node)
 
     # Step 3: Worker sends their DH half
@@ -112,8 +113,10 @@ def handle_worker(sock, addr, init_msg):
     node.connect(sock, K.encode('utf-8'), threading.get_ident())
 
     # Send all used nonces except Na and Nm, since worker already registered those
-    for n in (used_nonces ^ {Na, Nm}):
-        node.secure_send(f"nonce_used {n}")
+    for _nonce in (used_nonces ^ {Na, Nm}):
+        node.secure_send(f"nonce_used {_nonce}")
+    for _node in network_nodes.values():
+        node.secure_send(f"worker_connected {_node.nid} {_node.ip}")
     # TODO send WORKER_CONNECTED msg to all connected nodes
 
     # Start sending heartbeats
@@ -302,15 +305,18 @@ def connect_to_manager(mip):
                     _ip = tokens.pop(0)
                     new_node = Node(_wid, _ip)
                     register_node(new_node)
-                    if PRINT_DEBUG: print(f"w {twid:5} got instruction to register node {_wid} @ {_ip}")
+                    if PRINT_REGISTRATION: print(f"w {twid:5} got instruction to register new node {_wid} @ {_ip}")
+                    print(network_nodes)
                 case 'worker_disconnected':
                     _node_id = tokens.pop(0)
                     deregister_node(_node_id)
-                    if PRINT_DEBUG: print(f"w {twid:5} got instruction to deregister node {_wid}")
+                    if PRINT_REGISTRATION: print(f"w {twid:5} got instruction to deregister node {_wid}")
+                    print(network_nodes)
                 case 'nonce_used':
                     _nonce = tokens.pop(0)
                     register_nonce(_nonce)
-                    if PRINT_DEBUG: print(f"w {twid:5} got instruction to register nonce {_nonce}")
+                    if PRINT_REGISTRATION: print(f"w {twid:5} got instruction to register nonce node {_nonce}")
+                    print(used_nonces)
                 # TODO case for shutdown
             imsg = mgr.secure_recv()
 
