@@ -8,8 +8,9 @@ import time
 from utils import * # sha3(), gcd(), fme(), mmi(), is_prime()
 
 # Defined constants
-LISTEN_PORT = 10176
+LISTEN_PORT = 10177
 NONCE_SIZE_BYTES = 16
+HEARTBEAT_INTERVAL = 5
 
 #RFC 3526: 4096-bit mod-p group
 DH_G = 2
@@ -48,10 +49,17 @@ def register_node(n):
     else:
         network_nodes[n.nid] = n
         # TODO send WORKER_CONNECTED message to all connected nodes, if manager
+
 def deregister_node(nid):
     if nid in network_nodes:
         del network_nodes[nid]
         # TODO send WORKER_DISCONNECTED message to all connected nodes, if manager
+
+def heartbeat_loop(node):
+    # thread function
+    node.secure_send("heartbeat")
+    time.sleep(HEARTBEAT_INTERVAL)
+    heartbeat_loop(node)
 
 ###
 ### MANAGER Helper functions
@@ -101,20 +109,24 @@ def handle_worker(sock, addr, init_msg):
 
     # TODO send NONCE_USED/WORKER_CONNECTED msgs
     # TODO send WORKER_CONNECTED msg to all connected nodes
-    # TODO add worker to network_nodes
 
     print(f"M: entering message loop for wid = {wid}")
+
+    # Start sending heartbeats
+    hbthread = threading.Thread(target = heartbeat_loop, args = (node,))
+    hbthread.start()
 
     # --- Message Loop ---
     imsg = node.secure_recv()
     while imsg != '':
         match imsg:
             case 'heartbeat':
+                print(f"M received hb from {wid}")
                 node.time_last_heartbeat = time.time()
             case 'job_finished': 
                 node.busy = False
             # TODO case for shutdown
-        imsg = mgr.secure_recv()
+        imsg = node.secure_recv()
     print(f"M: exited worker {node.nid} message loop")
 
 def handle_new_connection(sock, addr):
@@ -183,7 +195,7 @@ def start_connection_listener():
     print(f"in start_connection_listener()")
 
     listen_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    listen_sock.settimeout(3)
+    listen_sock.settimeout(HEARTBEAT_INTERVAL * 3.5)
     listen_sock.bind(("0.0.0.0", LISTEN_PORT))
     listen_sock.listen(10)
     listener_thread = threading.Thread(target = listen, args = (listen_sock,))
@@ -244,7 +256,7 @@ def connect_to_manager(mip):
     print(f"W: in connect_to_manager() with mip={mip}")
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)    
-    sock.settimeout(3)
+    sock.settimeout(HEARTBEAT_INTERVAL * 3.5)
     sock.connect((mip, LISTEN_PORT))
 
     print(f"W: worker connected to manager at ip {mip}")
@@ -284,7 +296,12 @@ def connect_to_manager(mip):
         time.sleep(1)
         print(f"W: received secure message '{mgr.secure_recv()}'")
         mgr.secure_send("testing secure message -- hi there")
-        print("W: done")
+
+        # Start sending heartbeats
+        hbthread = threading.Thread(target = heartbeat_loop, args = (mgr,))
+        hbthread.start()
+
+        print(f"W: entering message loop")
 
         # --- Message Loop ---
         imsg = mgr.secure_recv()
@@ -292,6 +309,7 @@ def connect_to_manager(mip):
             cmd = imsg.split(' ')[0]
             match cmd:
                 case 'heartbeat':
+                    print(f"W received hb from mgr")
                     mgr.time_last_heartbeat = time.time()
                 case 'worker_connected':
                     new_node = Node(*(imsg.split(' ')[1:3]))

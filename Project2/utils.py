@@ -63,7 +63,7 @@ class Node:
             plaintext  += ' '
 
             stream = stream[_chunklen:]
-        return plaintext
+        return plaintext.rstrip(' ')
 
 def sha3(m, enc=True):
     # Calculates SHA3-512 of m and returns hex digest
