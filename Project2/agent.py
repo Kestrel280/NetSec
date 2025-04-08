@@ -94,7 +94,8 @@ def handle_worker(sock, addr, init_msg):
     print(f"M: established secret key K = {K}")
 
     node.connect(sock, K, threading.get_ident())
-    node.secure_send("testing secure message -- hello")
+    node.secure_send("testing secure message 1 -- hello")
+    node.secure_send("testing parallel secure message 2 -- hello")
 
     print(f"M: received secure message '{node.secure_recv()}'")
 
@@ -280,6 +281,7 @@ def connect_to_manager(mip):
         mgr = Node(0, mip)
         mgr.connect(sock, K, threading.get_ident())
 
+        time.sleep(1)
         print(f"W: received secure message '{mgr.secure_recv()}'")
         mgr.secure_send("testing secure message -- hi there")
         print("W: done")

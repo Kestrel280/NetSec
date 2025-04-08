@@ -39,18 +39,30 @@ class Node:
             return ''
         if (imsg == b''): return ''
 
-        header = imsg.split(b'.')[0].decode('utf-8')
-        payload = b'.'.join(imsg.split(b'.')[1:])
+        # There may be multiple encrypted messages in the socket at the time secure_recv is called
+        # They must be decrypted seperately
+        # Use this "stream" approach: read a header, decrypt just that message, and then if there's
+        #   still data, repeat until the stream is empty
+        stream = bytearray(imsg)
+        plaintext = ""
+        while (stream):
+            header          = stream.split(b'.')[0].decode('utf-8')
+            ciphertext_len  = int(header.split(',')[0])
+            tag_len         = int(header.split(',')[1])
+            nonce_len       = int(header.split(',')[2])
+            _chunklen       = len(header) + ciphertext_len + tag_len + nonce_len + 1 # +1 for the '.' byte
 
-        ciphertext_len  = int(header.split(',')[0])
-        tag_len         = int(header.split(',')[1])
-        nonce_len       = int(header.split(',')[2])
-        ciphertext = payload[:ciphertext_len]
-        tag             = payload[ciphertext_len : ciphertext_len + tag_len]
-        nonce           = payload[ciphertext_len + tag_len :]
+            payload         = stream[len(header) + 1 : _chunklen]
 
-        dec = AES.new(self.key, AES.MODE_GCM, nonce)
-        plaintext = dec.decrypt_and_verify(ciphertext, tag).decode('utf-8')
+            ciphertext      = payload[:ciphertext_len]
+            tag             = payload[ciphertext_len : ciphertext_len + tag_len]
+            nonce           = payload[ciphertext_len + tag_len :]
+
+            dec         = AES.new(self.key, AES.MODE_GCM, nonce)
+            plaintext  += dec.decrypt_and_verify(ciphertext, tag).decode('utf-8')
+            plaintext  += ' '
+
+            stream = stream[_chunklen:]
         return plaintext
 
 def sha3(m, enc=True):
