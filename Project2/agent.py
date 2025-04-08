@@ -8,7 +8,7 @@ import time
 from utils import * # sha3(), gcd(), fme(), mmi(), is_prime()
 
 # Defined constants
-LISTEN_PORT = 10177
+LISTEN_PORT = 10172
 NONCE_SIZE_BYTES = 16
 HEARTBEAT_INTERVAL = 5
 
@@ -19,7 +19,7 @@ DH_P = int("FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020B
 # Global variables
 # sjt = None              # Secret join token
 sjt = "abc123"
-wid = 1                 # id to assign to next connected worker
+wid = 1                 # running id counter for newly connected workers
 used_nonces = set()     # Set of used nonces
 network_nodes = {}      # List of Nodes on the cluster, connected or not
 mgr = None              # For manager, this is None; for all other connections, this will be a Node object for the mgr
@@ -69,6 +69,12 @@ def handle_worker(sock, addr, init_msg):
     # First, WMCP; then, enter message loop
 
     # --- Worker-Manager Connection Protocol --- 
+
+    # create unique id for this worker
+    global wid
+    twid = wid
+    wid += 1
+
     # Worker has sent step 1: check it's a unique nonce, and that they signed using the SJT
     cmd, Na, isig = init_msg.split(' ')
     register_nonce(Na)
@@ -82,11 +88,11 @@ def handle_worker(sock, addr, init_msg):
     x = random.randint(2**1024, 2**4095) # Generate my Diffie-Hellman parameter
     gxmodp = fme(DH_G, x, DH_P)
 
-    omsg = f"{++wid} {Nm} {gxmodp:x}" # [id, Nm (hex), g^x mod p (hex)]
+    omsg = f"{twid} {Nm} {gxmodp:x}" # [id, Nm (hex), g^x mod p (hex)]
     osig = sha3(f"{omsg}{sjt}")
     sock.send(f"{omsg} {osig}".encode('utf-8'))
 
-    node = Node(wid, addr) # TODO just store ip, not full addr object
+    node = Node(twid, addr) # TODO just store ip, not full addr object
     register_node(node)
 
     # Step 3: Worker sends their DH half
@@ -110,7 +116,7 @@ def handle_worker(sock, addr, init_msg):
     # TODO send NONCE_USED/WORKER_CONNECTED msgs
     # TODO send WORKER_CONNECTED msg to all connected nodes
 
-    print(f"M: entering message loop for wid = {wid}")
+    print(f"M: entering message loop for wid = {node.nid}")
 
     # Start sending heartbeats
     hbthread = threading.Thread(target = heartbeat_loop, args = (node,))
@@ -121,7 +127,7 @@ def handle_worker(sock, addr, init_msg):
     while imsg != '':
         match imsg:
             case 'heartbeat':
-                print(f"M received hb from {wid}")
+                print(f"M received hb from {node.nid}")
                 node.time_last_heartbeat = time.time()
             case 'job_finished': 
                 node.busy = False
@@ -273,9 +279,9 @@ def connect_to_manager(mip):
         # Manager sends back step 2
         imsg = sock.recv(NBUF_SIZE).decode('utf-8')
         # print(f"W: received imsg = '{imsg}'")
-        wid, Nm, gxmodp, isig = imsg.split(' ')
+        twid, Nm, gxmodp, isig = imsg.split(' ')
         register_nonce(Nm)
-        tsig = sha3(f"{wid} {Nm} {gxmodp}{sjt}")
+        tsig = sha3(f"{twid} {Nm} {gxmodp}{sjt}")
         assert tsig == isig
 
         # Step 3: send mgr my DH half
@@ -315,7 +321,7 @@ def connect_to_manager(mip):
                     new_node = Node(*(imsg.split(' ')[1:3]))
                     register_node(new_node)
                 case 'worker_disconnected':
-                    deregister_node(wid)
+                    deregister_node(imsg.split(' ')[1])
                 case 'nonce_used':
                     register_nonce(imsg.split(' ')[1])
                 # TODO case for shutdown
