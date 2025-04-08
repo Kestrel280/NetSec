@@ -9,9 +9,10 @@ from utils import * # sha3(), gcd(), fme(), mmi(), is_prime()
 
 # Defined constants
 PRINT_DEBUG         = True
-PRINT_MSGS          = True
+PRINT_MSGS          = False
 PRINT_REGISTRATION  = True
-LISTEN_PORT = 10171
+PRINT_REG_LISTS     = False  # When a new node/nonce is registered, print the full list
+LISTEN_PORT = 10173
 NONCE_SIZE_BYTES = 16
 HEARTBEAT_INTERVAL = 5
 fmt_mgr = "mgr    "
@@ -92,7 +93,7 @@ def handle_worker(sock, addr, init_msg):
     # Step 2: Generate a nonce and DH parameter, and send to worker
     Nm = os.urandom(NONCE_SIZE_BYTES).hex()
     broadcast_msg(f"nonce_used {Nm}")
-    if PRINT_DEBUG: print(f"{fmt_mgr} generated nonce Nm = {Nm:10}... for wid {twid:5}")
+    if PRINT_DEBUG: print(f"{fmt_mgr} generated nonce Nm = {Nm[:10]}... for wid {twid:5}")
     register_nonce(Nm)
     x = random.randint(2**1024, 2**4095) # Generate my Diffie-Hellman parameter
     gxmodp = fme(DH_G, x, DH_P)
@@ -114,7 +115,7 @@ def handle_worker(sock, addr, init_msg):
     # Step 4: Generate key, send NONCE_USED and WORKER_CONNECTED msgs for all connected workers
     Kp = fme(int(gymodp, 16), x, DH_P)
     K = sha3(f"{Kp} {Na} {Nm}")[:32]
-    if PRINT_DEBUG: print(f"{fmt_mgr} established secret key K = {K:10}...")
+    if PRINT_DEBUG: print(f"{fmt_mgr} established secret key K = {K[:10]}... for {twid}")
 
     node.connect(sock, K.encode('utf-8'), threading.get_ident())
 
@@ -265,7 +266,7 @@ def connect_to_manager(mip):
     try:
         # Step 1: generate a nonce and send a connection request to manager, signed using SJT
         Na = os.urandom(NONCE_SIZE_BYTES).hex()
-        if PRINT_DEBUG: print(f"w {twid:5} generated nonce Na = {Na}")
+        if PRINT_DEBUG: print(f"w {twid:5} generated nonce Na = {Na[:10]}...")
         register_nonce(Na)
         omsg = f"register {Na}"
         osig = sha3(f"{omsg}{sjt}")
@@ -288,7 +289,7 @@ def connect_to_manager(mip):
         # Step 4: Generate key, send status
         Kp = fme(int(gxmodp, 16), y, DH_P)
         K = sha3(f"{Kp} {Na} {Nm}")[:32].encode('utf-8')
-        if PRINT_DEBUG: print(f"w {twid:5} generated nonce Na = {Na}")
+        if PRINT_DEBUG: print(f"w {twid:5} generated nonce Na = {Na[:10]}...")
 
         mgr = Node(0, mip)
         mgr.connect(sock, K, threading.get_ident())
@@ -311,19 +312,20 @@ def connect_to_manager(mip):
                         _wid = tokens.pop(0)
                         _ip = tokens.pop(0)
                         new_node = Node(_wid, _ip)
-                        if ((_wid != twid) and (_wid not in network_nodes)): register_node(new_node)
-                        if PRINT_REGISTRATION: print(f"w {twid:5} got instruction to register new node {_wid} @ {_ip}")
-                        print(network_nodes)
+                        if ((_wid != twid) and (_wid not in network_nodes)):
+                            register_node(new_node)
+                            if PRINT_REGISTRATION: print(f"w {twid:5} got instruction to register new node {_wid} @ {_ip}")
+                            if PRINT_REG_LISTS: print(f"w {twid:5} network_nodes: {network_nodes}")
                     case 'worker_disconnected':
                         _node_id = tokens.pop(0)
                         deregister_node(_node_id)
                         if PRINT_REGISTRATION: print(f"w {twid:5} got instruction to deregister node {_wid}")
-                        print(network_nodes)
+                        if PRINT_REG_LISTS: print(f"w {twid:5} network_nodes: {network_nodes}")
                     case 'nonce_used':
                         _nonce = tokens.pop(0)
                         register_nonce(_nonce)
-                        if PRINT_REGISTRATION: print(f"w {twid:5} got instruction to register nonce node {_nonce}")
-                        print(used_nonces)
+                        if PRINT_REGISTRATION: print(f"w {twid:5} got instruction to register nonce {_nonce[:10]}...")
+                        if PRINT_REG_LISTS: print(f"w {twid:5} used_nonces: {used_nonces}")
                     # TODO case for shutdown
 
             imsg = mgr.secure_recv()
