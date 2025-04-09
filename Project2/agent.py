@@ -12,7 +12,7 @@ PRINT_DEBUG         = True
 PRINT_MSGS          = False
 PRINT_REGISTRATION  = True
 PRINT_REG_LISTS     = False  # When a new node/nonce is registered, print the full list
-LISTEN_PORT = 10179
+LISTEN_PORT = 10172
 NONCE_SIZE_BYTES = 16
 HEARTBEAT_INTERVAL = 5
 fmt_mgr = "mgr    "
@@ -360,7 +360,15 @@ def connect_to_manager(mip):
         for fn in _cleanup:
             try: fn()
             except Exception as e: print(f"w {twid} encountered exception during cleanup: {e}")
-        # TODO heartbeat protocol case (2)
+
+        # --- Heartbeat protocol case (2) ---
+        if twid < min(network_nodes.keys()): # Sub-case (a): we are the lowest-id worker
+            print(f"w {twid:5} has identified itself as next manager (TODO)")
+        else: # Sub-case (b)
+            for nid in sorted(network_nodes.keys()):
+                print(f"w {twid:5} has identified worker {nid} as next manager, attempting to connect... (TODO)")
+                time.sleep(HEARTBEAT_INTERVAL * 10) # --- TODO probe connection to new manager and connect_to_manager if successful probe
+                # otherwise, try the next node
 
     return
 
