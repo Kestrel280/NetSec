@@ -12,7 +12,7 @@ PRINT_DEBUG         = True
 PRINT_MSGS          = False
 PRINT_REGISTRATION  = True
 PRINT_REG_LISTS     = False  # When a new node/nonce is registered, print the full list
-LISTEN_PORT = 10172
+LISTEN_PORT = 10174
 NONCE_SIZE_BYTES = 16
 HEARTBEAT_INTERVAL = 5
 fmt_mgr = "mgr    "
@@ -24,10 +24,9 @@ DH_P = int("FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020B
 # Global variables
 # sjt = None              # Secret join token
 sjt = "abc123"
-wid = 1                 # running id counter for newly connected workers
+wid = 0                 # running id counter for newly connected workers
 used_nonces = set()     # Set of used nonces
 network_nodes = {}      # List of Nodes on the cluster, connected or not
-mgr = None              # For manager, this is None; for all other connections, this will be a Node object for the mgr
 
 # Arguments
 parser = argparse.ArgumentParser()
@@ -41,6 +40,11 @@ parser.add_argument("--path", nargs=1, help="Path to service to deploy with --de
 ###
 ### MISC Helper functions
 ###
+
+def wipe_cluster_data():
+    global used_nonces, network_nodes
+    used_nonces = set()
+    network_nodes = {}
 
 def broadcast_msg(msg):
     for node in network_nodes.values():
@@ -83,8 +87,8 @@ def handle_worker(sock, addr, init_msg):
 
     # create unique id for this worker
     global wid
-    twid = wid
     wid += 1
+    twid = wid
 
     # Keep a list of things to do if we need to terminate connection
     _cleanup = [lambda: sock.close()] # On cleanup, will need to close socket
@@ -150,7 +154,6 @@ def handle_worker(sock, addr, init_msg):
                         node.time_last_heartbeat = time.time()
                     case 'job_finished': 
                         node.busy = False
-                    # TODO case for shutdown
             imsg = node.secure_recv()
     except Exception as e:
         print(f"{fmt_mgr} with worker {node.nid:5} encountered exception {e}")
@@ -174,6 +177,8 @@ def handle_new_connection(sock, addr):
         match cmd:
             case 'register':
                 handle_worker(sock, addr, imsg)
+            case 'probe':
+                sock.send('ok'.encode('utf-8'))
             case 'list_agents':
                 # TODO do Cluster Services Connection Protocol
                 # TODO return list of workers
@@ -219,7 +224,13 @@ def start_connection_listener():
     """
     listen_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listen_sock.settimeout(HEARTBEAT_INTERVAL * 3.5)
-    listen_sock.bind(("0.0.0.0", LISTEN_PORT))
+    while True:
+        try:
+            listen_sock.bind(("0.0.0.0", LISTEN_PORT))
+            break
+        except OSError: # Port might be in use
+            print(f"{fmt_mgr} could not start connection listener, port may be in use. trying again in 3s...")
+            time.sleep(3)
     listen_sock.listen(10)
     listener_thread = threading.Thread(target = listen, args = (listen_sock,))
     listener_thread.start()
@@ -272,6 +283,7 @@ def connect_to_manager(mip):
     Returns:
         Nothing (for now)
     """
+    global wid
     twid = -1
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)    
     sock.settimeout(HEARTBEAT_INTERVAL * 3.5)
@@ -295,6 +307,7 @@ def connect_to_manager(mip):
         # Manager sends back step 2
         imsg = sock.recv(NBUF_SIZE).decode('utf-8')
         twid, Nm, gxmodp, isig = imsg.split(' ')
+        twid = int(twid)
         register_nonce(Nm)
         tsig = sha3(f"{twid} {Nm} {gxmodp}{sjt}")
         assert tsig == isig
@@ -329,24 +342,24 @@ def connect_to_manager(mip):
                     case 'heartbeat':
                         mgr.time_last_heartbeat = time.time()
                     case 'worker_connected':
-                        _wid = tokens.pop(0)
+                        _wid = int(tokens.pop(0))
                         _ip = tokens.pop(0)
                         new_node = Node(_wid, _ip)
                         if ((_wid != twid) and (_wid not in network_nodes)):
+                            wid = max(_wid, wid)
                             register_node(new_node)
                             if PRINT_REGISTRATION: print(f"w {twid:5} got instruction to register new node {_wid} @ {_ip}")
                             if PRINT_REG_LISTS: print(f"w {twid:5} network_nodes: {network_nodes}")
                     case 'worker_disconnected':
                         _node_id = tokens.pop(0)
                         deregister_node(_node_id)
-                        if PRINT_REGISTRATION: print(f"w {twid:5} got instruction to deregister node {_wid}")
+                        if PRINT_REGISTRATION: print(f"w {twid:5} got instruction to deregister node {_node_id}")
                         if PRINT_REG_LISTS: print(f"w {twid:5} network_nodes: {network_nodes}")
                     case 'nonce_used':
                         _nonce = tokens.pop(0)
                         register_nonce(_nonce)
                         if PRINT_REGISTRATION: print(f"w {twid:5} got instruction to register nonce {_nonce[:10]}...")
                         if PRINT_REG_LISTS: print(f"w {twid:5} used_nonces: {used_nonces}")
-                    # TODO case for shutdown
                     # TODO case for do_job
 
             imsg = mgr.secure_recv()
@@ -356,20 +369,48 @@ def connect_to_manager(mip):
     except Exception as e:
         print(f"w {twid:5} encountered exception {e}")
     finally:
+        if twid < 0:
+            print("worker failed to initialize! could not connect to manager")
+            return
         print(f"w {twid:5} closing connection to manager")
         for fn in _cleanup:
             try: fn()
             except Exception as e: print(f"w {twid} encountered exception during cleanup: {e}")
 
         # --- Heartbeat protocol case (2) ---
-        if twid < min(network_nodes.keys()): # Sub-case (a): we are the lowest-id worker
-            print(f"w {twid:5} has identified itself as next manager (TODO)")
+        if (len(network_nodes) == 0) or (twid < min(network_nodes.keys())): # Sub-case (a): we are the lowest-id worker
+            print(f"w {twid:5} has identified itself as next manager")
+            wipe_cluster_data()
+            return become_manager()
         else: # Sub-case (b)
-            for nid in sorted(network_nodes.keys()):
-                print(f"w {twid:5} has identified worker {nid} as next manager, attempting to connect... (TODO)")
-                time.sleep(HEARTBEAT_INTERVAL * 10) # --- TODO probe connection to new manager and connect_to_manager if successful probe
-                # otherwise, try the next node
+            nids = sorted(list(network_nodes.keys()))
+            idx = 0
+            while idx < len(nids):
+                nid = nids[idx]
+                print(f"w {twid:5} has identified worker {nid} as next manager, attempting to connect...")
+                probe_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)    
+                probe_sock.settimeout(HEARTBEAT_INTERVAL * 12)
+                try:
+                    probe_sock.connect((network_nodes[nid].ip, LISTEN_PORT))
+                    probe_sock.send(f"probe".encode('utf-8'))
+                    probe_sock.recv(NBUF_SIZE) # Doesn't matter what it sends back
+                    
+                    # This must be the new manager: clear our network nodes list and used nonces and connect to it
+                    #   (the new manager will re-collect and re-send that info)
+                    new_mgr_ip = network_nodes[nid].ip
+                    wipe_cluster_data()
+                    probe_sock.close()
 
+                    return connect_to_manager(new_mgr_ip)
+
+                except TimeoutError:
+                    print(f"w {twid:5} giving up trying {nid} as next manager, moving on to next candidate")
+                    probe_sock.close()
+                    idx += 1
+                except ConnectionRefusedError:
+                    print(f"w {twid:5} got ConnectionRefusedError, trying again in 40s -- likely waiting on port cleanup")
+                    time.sleep(40)
+            print(f"w {twid:5} could not find a new manager to connect to!!! Shutting down")
     return
 
 def deploy_service(mip, service_path):
@@ -420,7 +461,7 @@ if __name__ == '__main__':
     if args.bootstrap:
         become_manager()
     elif ((args.join is not None) and (args.token is not None)):
-        # sjt = args.token[0] TODO uncomment when we're actually setting an sjt
+        # sjt = args.token[0] TODO uncomment when we're actually setting an sjt; don't need to set it as global since we're still in global namespace here
         connect_to_manager(args.join[0])
     elif ((args.deploy_service is not None) and (args.path is not None)):
         deploy_service(args.deploy_service[0], args.path[0])
