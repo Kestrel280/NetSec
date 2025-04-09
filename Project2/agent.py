@@ -86,54 +86,59 @@ def handle_worker(sock, addr, init_msg):
     twid = wid
     wid += 1
 
-    # -- Step 1: Worker has sent a nonce: check it's a unique nonce, and that they signed using the SJT
-    cmd, Na, isig = init_msg.split(' ')
-    register_nonce(Na)
-    broadcast_msg(f"nonce_used {Na}")
-    tsig = sha3(f"{cmd} {Na}{sjt}")
-    assert tsig == isig
+    # Keep a list of things to do if we need to terminate connection
+    _cleanup = [lambda: sock.close()] # On cleanup, will need to close socket
 
-    # -- Step 2: Generate a nonce and DH parameter, and send to worker
-    
-    Nm = os.urandom(NONCE_SIZE_BYTES).hex()     # Generate my nonce
-    broadcast_msg(f"nonce_used {Nm}")
-    if PRINT_DEBUG: print(f"{fmt_mgr} generated nonce Nm = {Nm[:10]}... for wid {twid:5}")
-    register_nonce(Nm)
-    x = random.randint(2**1024, 2**4095)        # Generate my Diffie-Hellman parameter
-    gxmodp = fme(DH_G, x, DH_P)
-    omsg = f"{twid} {Nm} {gxmodp:x}" # [id, Nm (hex), g^x mod p (hex)]
-    osig = sha3(f"{omsg}{sjt}")
-    sock.send(f"{omsg} {osig}".encode('utf-8'))
-
-    node = Node(twid, addr[0])
-    broadcast_msg(f"worker_connected {twid} {addr[0]}")
-    register_node(node)
-
-    # Step 3: Worker sends their DH half
-    imsg = sock.recv(NBUF_SIZE).decode('utf-8')
-    gymodp, isig = imsg.split(' ')
-    tsig = sha3(f"{gymodp}{sjt}")
-    assert tsig == isig
-
-    # Step 4: Generate key, send NONCE_USED and WORKER_CONNECTED msgs for all connected workers
-    Kp = fme(int(gymodp, 16), x, DH_P)
-    K = sha3(f"{Kp} {Na} {Nm}")[:32]
-    if PRINT_DEBUG: print(f"{fmt_mgr} established secret key K = {K[:10]}... for {twid}")
-
-    node.connect(sock, K.encode('utf-8'), threading.get_ident())
-
-    # Send all used nonces except Na and Nm, since worker already registered those
-    for _nonce in (used_nonces ^ {Na, Nm}):
-        node.secure_send(f"nonce_used {_nonce}")
-    for _node in network_nodes.values():
-        node.secure_send(f"worker_connected {_node.nid} {_node.ip}")
-
-    # Start sending heartbeats
-    hbthread = threading.Thread(target = heartbeat_loop, args = (node,))
-    hbthread.start()
-
-    # --- Message Loop ---
     try:
+        # -- Step 1: Worker has sent a nonce: check it's a unique nonce, and that they signed using the SJT
+        cmd, Na, isig = init_msg.split(' ')
+        register_nonce(Na)
+        broadcast_msg(f"nonce_used {Na}")
+        tsig = sha3(f"{cmd} {Na}{sjt}")
+        assert tsig == isig
+
+        # -- Step 2: Generate a nonce and DH parameter, and send to worker
+        
+        Nm = os.urandom(NONCE_SIZE_BYTES).hex()     # Generate my nonce
+        broadcast_msg(f"nonce_used {Nm}")
+        if PRINT_DEBUG: print(f"{fmt_mgr} generated nonce Nm = {Nm[:10]}... for wid {twid:5}")
+        register_nonce(Nm)
+        x = random.randint(2**1024, 2**4095)        # Generate my Diffie-Hellman parameter
+        gxmodp = fme(DH_G, x, DH_P)
+        omsg = f"{twid} {Nm} {gxmodp:x}" # [id, Nm (hex), g^x mod p (hex)]
+        osig = sha3(f"{omsg}{sjt}")
+        sock.send(f"{omsg} {osig}".encode('utf-8'))
+
+        node = Node(twid, addr[0])
+        broadcast_msg(f"worker_connected {twid} {addr[0]}")
+        _cleanup.append(lambda: broadcast_msg(f"worker_disconnected {twid}")) # On cleanup, will need to broadcast disconnected msg
+        register_node(node)
+        _cleanup.append(lambda: deregister_node(twid)) # On cleanup, need to deregister this node
+
+        # Step 3: Worker sends their DH half
+        imsg = sock.recv(NBUF_SIZE).decode('utf-8')
+        gymodp, isig = imsg.split(' ')
+        tsig = sha3(f"{gymodp}{sjt}")
+        assert tsig == isig
+
+        # Step 4: Generate key, send NONCE_USED and WORKER_CONNECTED msgs for all connected workers
+        Kp = fme(int(gymodp, 16), x, DH_P)
+        K = sha3(f"{Kp} {Na} {Nm}")[:32]
+        if PRINT_DEBUG: print(f"{fmt_mgr} established secret key K = {K[:10]}... for {twid}")
+
+        node.connect(sock, K.encode('utf-8'), threading.get_ident())
+
+        # Send all used nonces except Na and Nm, since worker already registered those
+        for _nonce in (used_nonces ^ {Na, Nm}):
+            node.secure_send(f"nonce_used {_nonce}")
+        for _node in network_nodes.values():
+            node.secure_send(f"worker_connected {_node.nid} {_node.ip}")
+
+        # Start sending heartbeats
+        hbthread = threading.Thread(target = heartbeat_loop, args = (node,))
+        hbthread.start()
+
+        # --- Message Loop ---
         imsg = node.secure_recv()
         while imsg != '':
             if PRINT_MSGS: print(f"{fmt_mgr} received msg '{imsg}' from worker {twid}")
@@ -147,12 +152,13 @@ def handle_worker(sock, addr, init_msg):
                         node.busy = False
                     # TODO case for shutdown
             imsg = node.secure_recv()
-    except (TimeoutError, BrokenPipeError) as e:
+    except Exception as e:
         print(f"{fmt_mgr} with worker {node.nid:5} encountered exception {e}")
     finally:
         print(f"{fmt_mgr} closing connection to worker {node.nid:5}")
-        sock.close()
-        broadcast_msg(f"worker_disconnected {twid}")
+        for fn in _cleanup:
+            try: fn()
+            except Exception as e: print(f"{fmt_mgr} encountered exception during cleanup of worker {twid}: {e}")
 
 def handle_new_connection(sock, addr):
     """
