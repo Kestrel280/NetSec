@@ -12,7 +12,7 @@ PRINT_DEBUG         = True
 PRINT_MSGS          = False
 PRINT_REGISTRATION  = True
 PRINT_REG_LISTS     = False  # When a new node/nonce is registered, print the full list
-LISTEN_PORT = 10177
+LISTEN_PORT = 10179
 NONCE_SIZE_BYTES = 16
 HEARTBEAT_INTERVAL = 5
 fmt_mgr = "mgr    "
@@ -275,10 +275,15 @@ def connect_to_manager(mip):
     twid = -1
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)    
     sock.settimeout(HEARTBEAT_INTERVAL * 3.5)
-    sock.connect((mip, LISTEN_PORT))
+
+    # Keep a list of things to do if we need to terminate connection
+    _cleanup = []
 
     # --- Worker-Manager Connection Protocol ---
     try:
+        sock.connect((mip, LISTEN_PORT))
+        _cleanup.append(lambda: sock.close()) # On cleanup, will need to close socket
+
         # Step 1: generate a nonce and send a connection request to manager, signed using SJT
         Na = os.urandom(NONCE_SIZE_BYTES).hex()
         if PRINT_DEBUG: print(f"w {twid:5} generated nonce Na = {Na[:10]}...")
@@ -342,12 +347,20 @@ def connect_to_manager(mip):
                         if PRINT_REGISTRATION: print(f"w {twid:5} got instruction to register nonce {_nonce[:10]}...")
                         if PRINT_REG_LISTS: print(f"w {twid:5} used_nonces: {used_nonces}")
                     # TODO case for shutdown
+                    # TODO case for do_job
 
             imsg = mgr.secure_recv()
 
     except AssertionError:
         print("w {twid:5} provided invalid signature, terminating connection")
-        sock.close()
+    except Exception as e:
+        print(f"w {twid:5} encountered exception {e}")
+    finally:
+        print(f"w {twid:5} closing connection to manager")
+        for fn in _cleanup:
+            try: fn()
+            except Exception as e: print(f"w {twid} encountered exception during cleanup: {e}")
+        # TODO heartbeat protocol case (2)
 
     return
 
