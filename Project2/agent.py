@@ -12,7 +12,7 @@ PRINT_DEBUG         = True
 PRINT_MSGS          = False
 PRINT_REGISTRATION  = True
 PRINT_REG_LISTS     = False  # When a new node/nonce is registered, print the full list
-LISTEN_PORT = 10173
+LISTEN_PORT = 10177
 NONCE_SIZE_BYTES = 16
 HEARTBEAT_INTERVAL = 5
 fmt_mgr = "mgr    "
@@ -43,10 +43,10 @@ parser.add_argument("--path", nargs=1, help="Path to service to deploy with --de
 ###
 
 def broadcast_msg(msg):
-    for node in network_nodes:
+    for node in network_nodes.values():
         try:
             node.secure_send(msg)
-        except Exception: pass
+        except Exception: continue # If something fails, we don't want to handle it here -- there's a thread dedicated to the connection that should handle it
 
 def register_nonce(n):
     if n in used_nonces:
@@ -65,7 +65,10 @@ def deregister_node(nid):
 
 def heartbeat_loop(node):
     # thread function
-    node.secure_send("heartbeat")
+    try:
+        node.secure_send("heartbeat")
+    except OSError: # connection to node closed -- shut down
+        return
     time.sleep(HEARTBEAT_INTERVAL)
     heartbeat_loop(node)
 
@@ -83,21 +86,21 @@ def handle_worker(sock, addr, init_msg):
     twid = wid
     wid += 1
 
-    # Worker has sent step 1: check it's a unique nonce, and that they signed using the SJT
+    # -- Step 1: Worker has sent a nonce: check it's a unique nonce, and that they signed using the SJT
     cmd, Na, isig = init_msg.split(' ')
-    broadcast_msg(f"nonce_used {Na}")
     register_nonce(Na)
+    broadcast_msg(f"nonce_used {Na}")
     tsig = sha3(f"{cmd} {Na}{sjt}")
     assert tsig == isig
 
-    # Step 2: Generate a nonce and DH parameter, and send to worker
-    Nm = os.urandom(NONCE_SIZE_BYTES).hex()
+    # -- Step 2: Generate a nonce and DH parameter, and send to worker
+    
+    Nm = os.urandom(NONCE_SIZE_BYTES).hex()     # Generate my nonce
     broadcast_msg(f"nonce_used {Nm}")
     if PRINT_DEBUG: print(f"{fmt_mgr} generated nonce Nm = {Nm[:10]}... for wid {twid:5}")
     register_nonce(Nm)
-    x = random.randint(2**1024, 2**4095) # Generate my Diffie-Hellman parameter
+    x = random.randint(2**1024, 2**4095)        # Generate my Diffie-Hellman parameter
     gxmodp = fme(DH_G, x, DH_P)
-
     omsg = f"{twid} {Nm} {gxmodp:x}" # [id, Nm (hex), g^x mod p (hex)]
     osig = sha3(f"{omsg}{sjt}")
     sock.send(f"{omsg} {osig}".encode('utf-8'))
@@ -130,20 +133,26 @@ def handle_worker(sock, addr, init_msg):
     hbthread.start()
 
     # --- Message Loop ---
-    imsg = node.secure_recv()
-    while imsg != '':
-        if PRINT_MSGS: print(f"{fmt_mgr} received msg '{imsg}'")
-        tokens = imsg.split(' ')
-        while tokens:
-            cmd = tokens.pop(0)
-            match cmd:
-                case 'heartbeat':
-                    node.time_last_heartbeat = time.time()
-                case 'job_finished': 
-                    node.busy = False
-                # TODO case for shutdown
+    try:
         imsg = node.secure_recv()
-    if PRINT_DEBUG: print(f"{fmt_mgr} exited worker {node.nid:5} message loop")
+        while imsg != '':
+            if PRINT_MSGS: print(f"{fmt_mgr} received msg '{imsg}' from worker {twid}")
+            tokens = imsg.split(' ')
+            while tokens:
+                cmd = tokens.pop(0)
+                match cmd:
+                    case 'heartbeat':
+                        node.time_last_heartbeat = time.time()
+                    case 'job_finished': 
+                        node.busy = False
+                    # TODO case for shutdown
+            imsg = node.secure_recv()
+    except (TimeoutError, BrokenPipeError) as e:
+        print(f"{fmt_mgr} with worker {node.nid:5} encountered exception {e}")
+    finally:
+        print(f"{fmt_mgr} closing connection to worker {node.nid:5}")
+        sock.close()
+        broadcast_msg(f"worker_disconnected {twid}")
 
 def handle_new_connection(sock, addr):
     """
@@ -240,7 +249,7 @@ def become_manager():
         pass
 
     start_connection_listener()
-    print("{fmt_mgr} started connection listener")
+    if PRINT_DEBUG: print(f"{fmt_mgr} started connection listener")
 
     return
 
