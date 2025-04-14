@@ -80,6 +80,52 @@ def heartbeat_loop(node):
 ### MANAGER Helper functions
 ###
 
+def handle_user_request(sock, addr, init_msg):
+    
+    try:
+        # -- Step 1: Worker has sent a nonce: check it's a unique nonce, and that they signed using the SJT
+        cmd, Na = init_msg.split(' ')
+        register_nonce(Na)
+        broadcast_msg(f"nonce_used {Na}")
+
+        # -- Step 2: Generate a nonce and DH parameter, and send to worker
+        
+        Nm = os.urandom(NONCE_SIZE_BYTES).hex()     # Generate my nonce
+        broadcast_msg(f"nonce_used {Nm}")
+        if PRINT_DEBUG: print(f"Manager generated nonce Nm = {Nm[:10]}...")
+        register_nonce(Nm)
+        x = random.randint(2**1024, 2**4095)        # Generate my Diffie-Hellman parameter
+        gxmodp = fme(DH_G, x, DH_P)
+        omsg = f"{Nm} {gxmodp:x}" # [id, Nm (hex), g^x mod p (hex)]
+        sock.send(f"{omsg}".encode('utf-8'))
+
+        # Step 3: User sends their DH half
+        gymodp = sock.recv(NBUF_SIZE).decode('utf-8')
+
+        # Step 4: Generate key, send NONCE_USED and WORKER_CONNECTED msgs for all connected workers
+        Kp = fme(int(gymodp, 16), x, DH_P)
+        K = sha3(f"{Kp} {Na} {Nm}")[:32].encode('utf-8')
+        if PRINT_DEBUG: print(f"Manager established secret key K = {K[:10]}")
+
+        for _node in network_nodes.values():
+            enc = AES.new(K, AES.MODE_GCM)
+            text = (f"{_node.nid} {_node.ip}")
+            ciphertext, tag = enc.encrypt_and_digest(text.encode('utf-8'))
+            nonce = enc.nonce
+            header = "{},{},{}.".format(len(ciphertext), len(tag), len(nonce)).encode('utf-8')
+            omsg = bytearray()
+            omsg = omsg + header + ciphertext + tag + nonce
+            sock.send(omsg)
+        
+    except Exception as e:
+        print(f"Manager in handle_user_reuqest encountered exception {e}")
+
+    finally:
+        # Close the connection when done
+        sock.close()
+        print(f"Manager closed connection with user at {addr}")  
+
+
 def handle_worker(sock, addr, init_msg):
     # First, WMCP; then, enter message loop
 
@@ -180,9 +226,7 @@ def handle_new_connection(sock, addr):
             case 'probe':
                 sock.send('ok'.encode('utf-8'))
             case 'list_agents':
-                # TODO do Cluster Services Connection Protocol
-                # TODO return list of workers
-                pass
+                handle_user_request(sock, addr, imsg)
             case 'deploy_services':
                 # TODO do Cluster Services Connection Protocol
                 # TODO deploy service
@@ -450,8 +494,82 @@ def list_agents(mip):
         Nothing (for now)
 
     """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)  
 
-    print(f"in list_agents with mip={mip}")
+    try:
+        sock.connect((mip, LISTEN_PORT))
+
+        # Step 1: generate a nonce and send a connection request to manager, signed using SJT
+        Na = os.urandom(NONCE_SIZE_BYTES).hex()
+        if PRINT_DEBUG: print(f"generated nonce Na = {Na[:10]}...")
+        register_nonce(Na)
+        omsg = f"list_agents {Na}"
+        sock.send(f"{omsg}".encode('utf-8'))
+
+        # Manager sends back step 2
+        imsg = sock.recv(NBUF_SIZE).decode('utf-8')
+        Nm, gxmodp = imsg.split(' ')
+        register_nonce(Nm)
+        
+        # Step 3: send mgr my DH half
+        y = random.randint(2**1024, 2**4095) # Generate my Diffie-Hellman parameter
+        gymodp = fme(DH_G, y, DH_P)
+        omsg = f"{gymodp:x}"
+        sock.send(f"{omsg}".encode('utf-8'))
+
+        # Step 4: Generate key, send status
+        Kp = fme(int(gxmodp, 16), y, DH_P)
+        K = sha3(f"{Kp} {Na} {Nm}")[:32].encode('utf-8')
+        if PRINT_DEBUG: print(f"User established secret key K = {K[:10]}")
+
+        workers = []
+
+        imsg = sock.recv(NBUF_SIZE)
+        while imsg:
+            stream = bytearray(imsg)
+            plaintext = ""
+            while (stream):
+                header          = stream.split(b'.')[0].decode('utf-8')
+                ciphertext_len  = int(header.split(',')[0])
+                tag_len         = int(header.split(',')[1])
+                nonce_len       = int(header.split(',')[2])
+                _chunklen       = len(header) + ciphertext_len + tag_len + nonce_len + 1 # +1 for the '.' byte
+
+                payload         = stream[len(header) + 1 : _chunklen]
+
+                ciphertext      = payload[:ciphertext_len]
+                tag             = payload[ciphertext_len : ciphertext_len + tag_len]
+                nonce           = payload[ciphertext_len + tag_len :]
+
+                dec         = AES.new(K, AES.MODE_GCM, nonce)
+                plaintext  += dec.decrypt_and_verify(ciphertext, tag).decode('utf-8')
+                plaintext  += ' '
+
+                stream = stream[_chunklen:]
+            imsg = sock.recv(NBUF_SIZE)
+            
+        print("Manager:", mip)
+        print("Workers:")
+        #for worker in workers:
+        #    print(worker)
+        
+        parts = plaintext.strip().split()
+        formatted_output = ""
+
+        for i in range(0, len(parts), 2):
+            nid = parts[i]
+            ip = parts[i + 1]
+            formatted_output += f"Worker {nid}: {ip}\n"
+
+        print(formatted_output)
+
+    except Exception as e:
+        print(f"User encountered exception {e}")  
+
+    finally:
+        # Close the connection when done
+        sock.close()
+        print(f"Closed connection to manager at {mip}")
 
     return
 
