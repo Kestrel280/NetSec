@@ -4,14 +4,15 @@ import os
 import socket
 import threading
 import time
+import subprocess
 
 from utils import * # sha3(), gcd(), fme(), mmi(), is_prime()
 
 # Defined constants
 PRINT_DEBUG         = True
-PRINT_MSGS          = False
+PRINT_MSGS          = True
 PRINT_REGISTRATION  = True
-PRINT_REG_LISTS     = False  # When a new node/nonce is registered, print the full list
+PRINT_REG_LISTS     = True  # When a new node/nonce is registered, print the full list
 LISTEN_PORT = 10174
 NONCE_SIZE_BYTES = 16
 HEARTBEAT_INTERVAL = 5
@@ -27,6 +28,8 @@ sjt = "abc123"
 wid = 0                 # running id counter for newly connected workers
 used_nonces = set()     # Set of used nonces
 network_nodes = {}      # List of Nodes on the cluster, connected or not
+service_locations = {}  # service_path → worker_id
+
 
 # Arguments
 parser = argparse.ArgumentParser()
@@ -71,6 +74,7 @@ def heartbeat_loop(node):
     # thread function
     try:
         node.secure_send("heartbeat")
+        
     except OSError: # connection to node closed -- shut down
         return
     time.sleep(HEARTBEAT_INTERVAL)
@@ -79,6 +83,52 @@ def heartbeat_loop(node):
 ###
 ### MANAGER Helper functions
 ###
+
+def handle_user_request(sock, addr, init_msg):
+    
+    try:
+        # -- Step 1: Worker has sent a nonce: check it's a unique nonce, and that they signed using the SJT
+        cmd, Na = init_msg.split(' ')
+        register_nonce(Na)
+        broadcast_msg(f"nonce_used {Na}")
+
+        # -- Step 2: Generate a nonce and DH parameter, and send to worker
+        
+        Nm = os.urandom(NONCE_SIZE_BYTES).hex()     # Generate my nonce
+        broadcast_msg(f"nonce_used {Nm}")
+        if PRINT_DEBUG: print(f"Manager generated nonce Nm = {Nm[:10]}...")
+        register_nonce(Nm)
+        x = random.randint(2**1024, 2**4095)        # Generate my Diffie-Hellman parameter
+        gxmodp = fme(DH_G, x, DH_P)
+        omsg = f"{Nm} {gxmodp:x}" # [id, Nm (hex), g^x mod p (hex)]
+        sock.send(f"{omsg}".encode('utf-8'))
+
+        # Step 3: User sends their DH half
+        gymodp = sock.recv(NBUF_SIZE).decode('utf-8')
+
+        # Step 4: Generate key, send NONCE_USED and WORKER_CONNECTED msgs for all connected workers
+        Kp = fme(int(gymodp, 16), x, DH_P)
+        K = sha3(f"{Kp} {Na} {Nm}")[:32].encode('utf-8')
+        if PRINT_DEBUG: print(f"Manager established secret key K = {K[:10]}")
+
+        for _node in network_nodes.values():
+            enc = AES.new(K, AES.MODE_GCM)
+            text = (f"{_node.nid} {_node.ip}")
+            ciphertext, tag = enc.encrypt_and_digest(text.encode('utf-8'))
+            nonce = enc.nonce
+            header = "{},{},{}.".format(len(ciphertext), len(tag), len(nonce)).encode('utf-8')
+            omsg = bytearray()
+            omsg = omsg + header + ciphertext + tag + nonce
+            sock.send(omsg)
+        
+    except Exception as e:
+        print(f"Manager in handle_user_reuqest encountered exception {e}")
+
+    finally:
+        # Close the connection when done
+        sock.close()
+        print(f"Manager closed connection with user at {addr}")  
+
 
 def handle_worker(sock, addr, init_msg):
     # First, WMCP; then, enter message loop
@@ -159,9 +209,36 @@ def handle_worker(sock, addr, init_msg):
         print(f"{fmt_mgr} with worker {node.nid:5} encountered exception {e}")
     finally:
         print(f"{fmt_mgr} closing connection to worker {node.nid:5}")
+        handle_worker_unavailability(node)
         for fn in _cleanup:
             try: fn()
             except Exception as e: print(f"{fmt_mgr} encountered exception during cleanup of worker {twid}: {e}")
+
+def handle_worker_unavailability(node):
+    nid = node.nid
+    print(f"{fmt_mgr} detected worker {nid} is offline")
+    broadcast_msg(f"worker_disconnected {nid}")
+    deregister_node(nid)
+
+    # Check if this worker was hosting any services
+    for svc_path, svc_wid in list(service_locations.items()):
+        if svc_wid == nid:
+            print(f"{fmt_mgr} migrating {svc_path} from worker {nid}")
+            while True:
+                available = [n for n in network_nodes.values() if not n.busy]
+                if available:
+                    new_node = random.choice(available)
+                    new_node.secure_send(f"do_job {svc_path}")
+                    new_node.busy = True
+                    service_locations[svc_path] = new_node.nid
+                    print(f"{fmt_mgr} migrated {svc_path} to worker {new_node.nid}")
+                    break
+                else:
+                    print(f"{fmt_mgr} no workers available to migrate {svc_path}, retrying in 10s...")
+                    time.sleep(10)
+
+
+
 
 def handle_new_connection(sock, addr):
     """
@@ -180,13 +257,10 @@ def handle_new_connection(sock, addr):
             case 'probe':
                 sock.send('ok'.encode('utf-8'))
             case 'list_agents':
-                # TODO do Cluster Services Connection Protocol
-                # TODO return list of workers
-                pass
+                handle_user_request(sock, addr, imsg)
             case 'deploy_services':
-                # TODO do Cluster Services Connection Protocol
-                # TODO deploy service
-                pass
+                # Handle deploy service request
+                service_deploy_protocol(sock, addr, imsg)
     except AssertionError: # Assertion while checking signature during DH key exchange for proof of SJT
         print("worker provided invalid signature, terminating their connection request")
         sock.close()
@@ -195,6 +269,54 @@ def handle_new_connection(sock, addr):
         sock.close()
 
     return
+
+
+def service_deploy_protocol(sock, addr, init_msg):
+    try:
+        cmd, Na = init_msg.split(' ')
+        register_nonce(Na)
+        broadcast_msg(f"nonce_used {Na}")
+
+        Nm = os.urandom(NONCE_SIZE_BYTES).hex()
+        broadcast_msg(f"nonce_used {Nm}")
+        register_nonce(Nm)
+        x = random.randint(2**1024, 2**4095)
+        gxmodp = fme(DH_G, x, DH_P)
+        sock.send(f"{Nm} {gxmodp:x}".encode('utf-8'))
+
+        gymodp = sock.recv(NBUF_SIZE).decode('utf-8')
+        Kp = fme(int(gymodp, 16), x, DH_P)
+        K = sha3(f"{Kp} {Na} {Nm}")[:32].encode('utf-8')
+
+        enc = AES.new(K, AES.MODE_GCM)
+        data = sock.recv(NBUF_SIZE)
+        ciphertext_len, tag_len, nonce_len = map(int, data.split(b'.')[0].decode().split(','))
+        payload = data[len(data.split(b'.')[0])+1:]
+
+        ciphertext = payload[:ciphertext_len]
+        tag = payload[ciphertext_len:ciphertext_len+tag_len]
+        nonce = payload[ciphertext_len+tag_len:]
+
+        dec = AES.new(K, AES.MODE_GCM, nonce)
+        plaintext = dec.decrypt_and_verify(ciphertext, tag).decode('utf-8')
+        service_path = plaintext.strip()
+
+        # Select a random worker
+        available_workers = [n for n in network_nodes.values() if not n.busy]
+        if not available_workers:
+            print("No available workers to deploy the service.")
+            return
+        chosen = random.choice(available_workers)
+        chosen.busy = True
+        chosen.secure_send(f"do_job {service_path}")
+        service_locations[service_path] = chosen.nid
+        print(f"Service {service_path} deployed to worker {chosen.nid} at {chosen.ip}")
+
+    except Exception as e:
+        print(f"{fmt_mgr} deploy_service handler failed: {e}")
+    finally:
+        sock.close()
+
 
 def listen(listen_sock):
     """
@@ -360,7 +482,11 @@ def connect_to_manager(mip):
                         register_nonce(_nonce)
                         if PRINT_REGISTRATION: print(f"w {twid:5} got instruction to register nonce {_nonce[:10]}...")
                         if PRINT_REG_LISTS: print(f"w {twid:5} used_nonces: {used_nonces}")
-                    # TODO case for do_job
+                    case 'do_job':
+                        file_path = tokens.pop(0)
+                        print(f"w {twid:5} executing service {file_path}")
+                        subprocess.Popen(['python3', file_path])
+                        mgr.secure_send("job_finished")
 
             imsg = mgr.secure_recv()
 
@@ -414,25 +540,38 @@ def connect_to_manager(mip):
     return
 
 def deploy_service(mip, service_path):
-    """
-    Deploys a service to a cluster.
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.connect((mip, LISTEN_PORT))
 
-    1. Load the Python file at service_path into a byte buffer
-    2. Connect to the cluster using "Cluster Services Connection Protocol"
-    3. Send a "deploy_service {number of bytes}" message to manager
-    4. Await "ok" message
-    5. Send byte buffer
-    6. Await "ok" message
-    7. Disconnect from cluster
+        Na = os.urandom(NONCE_SIZE_BYTES).hex()
+        register_nonce(Na)
+        sock.send(f"deploy_services {Na}".encode('utf-8'))
 
-    Args:
-        mip (str): IP of cluster manager
-        service_path(str): Path to service to deploy (Python file)
+        imsg = sock.recv(NBUF_SIZE).decode('utf-8')
+        Nm, gxmodp = imsg.split(' ')
+        register_nonce(Nm)
 
-    Returns:
-        Nothing (for now)
-    """
-    return
+        y = random.randint(2**1024, 2**4095)
+        gymodp = fme(DH_G, y, DH_P)
+        sock.send(f"{gymodp:x}".encode('utf-8'))
+
+        Kp = fme(int(gxmodp, 16), y, DH_P)
+        K = sha3(f"{Kp} {Na} {Nm}")[:32].encode('utf-8')
+
+        enc = AES.new(K, AES.MODE_GCM)
+        ciphertext, tag = enc.encrypt_and_digest(service_path.encode('utf-8'))
+        nonce = enc.nonce
+        header = "{},{},{}.".format(len(ciphertext), len(tag), len(nonce)).encode('utf-8')
+        payload = header + ciphertext + tag + nonce
+
+        sock.send(payload)
+
+    except Exception as e:
+        print(f"User encountered exception during service deploy: {e}")
+    finally:
+        sock.close()
+        print(f"Closed connection to manager at {mip}")
 
 def list_agents(mip):
     """
@@ -450,8 +589,82 @@ def list_agents(mip):
         Nothing (for now)
 
     """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)  
 
-    print(f"in list_agents with mip={mip}")
+    try:
+        sock.connect((mip, LISTEN_PORT))
+
+        # Step 1: generate a nonce and send a connection request to manager, signed using SJT
+        Na = os.urandom(NONCE_SIZE_BYTES).hex()
+        if PRINT_DEBUG: print(f"generated nonce Na = {Na[:10]}...")
+        register_nonce(Na)
+        omsg = f"list_agents {Na}"
+        sock.send(f"{omsg}".encode('utf-8'))
+
+        # Manager sends back step 2
+        imsg = sock.recv(NBUF_SIZE).decode('utf-8')
+        Nm, gxmodp = imsg.split(' ')
+        register_nonce(Nm)
+        
+        # Step 3: send mgr my DH half
+        y = random.randint(2**1024, 2**4095) # Generate my Diffie-Hellman parameter
+        gymodp = fme(DH_G, y, DH_P)
+        omsg = f"{gymodp:x}"
+        sock.send(f"{omsg}".encode('utf-8'))
+
+        # Step 4: Generate key, send status
+        Kp = fme(int(gxmodp, 16), y, DH_P)
+        K = sha3(f"{Kp} {Na} {Nm}")[:32].encode('utf-8')
+        if PRINT_DEBUG: print(f"User established secret key K = {K[:10]}")
+
+        workers = []
+
+        imsg = sock.recv(NBUF_SIZE)
+        while imsg:
+            stream = bytearray(imsg)
+            plaintext = ""
+            while (stream):
+                header          = stream.split(b'.')[0].decode('utf-8')
+                ciphertext_len  = int(header.split(',')[0])
+                tag_len         = int(header.split(',')[1])
+                nonce_len       = int(header.split(',')[2])
+                _chunklen       = len(header) + ciphertext_len + tag_len + nonce_len + 1 # +1 for the '.' byte
+
+                payload         = stream[len(header) + 1 : _chunklen]
+
+                ciphertext      = payload[:ciphertext_len]
+                tag             = payload[ciphertext_len : ciphertext_len + tag_len]
+                nonce           = payload[ciphertext_len + tag_len :]
+
+                dec         = AES.new(K, AES.MODE_GCM, nonce)
+                plaintext  += dec.decrypt_and_verify(ciphertext, tag).decode('utf-8')
+                plaintext  += ' '
+
+                stream = stream[_chunklen:]
+            imsg = sock.recv(NBUF_SIZE)
+            
+        print("Manager:", mip)
+        print("Workers:")
+        #for worker in workers:
+        #    print(worker)
+        
+        parts = plaintext.strip().split()
+        formatted_output = ""
+
+        for i in range(0, len(parts), 2):
+            nid = parts[i]
+            ip = parts[i + 1]
+            formatted_output += f"Worker {nid}: {ip}\n"
+
+        print(formatted_output)
+
+    except Exception as e:
+        print(f"User encountered exception {e}")  
+
+    finally:
+        # Close the connection when done
+        sock.close()
+        print(f"Closed connection to manager at {mip}")
 
     return
 
